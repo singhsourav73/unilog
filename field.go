@@ -46,3 +46,13 @@ func Time(key string, value time.Time) Field {
 func ErrorField(err error) Field {
 	return Field{Key: "error", Value: err}
 }
+
+func cloneFields(in []Field) []Field {
+	if len(in) == 0 {
+		return nil
+	}
+
+	out := make([]Field, len(in))
+	copy(out, in)
+	return out
+}
