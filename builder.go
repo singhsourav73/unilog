@@ -3,8 +3,10 @@ package unilog
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"strings"
 	"sync"
+	"time"
 )
 
 type SinkFactory func(params map[string]any) (Sink, error)
@@ -66,15 +68,15 @@ func (r *Registry) RegisterProcessor(name string, factory ProcessorFactory) erro
 }
 
 func (r *Registry) sinkFactory(name string) (SinkFactory, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	f, ok := r.sinks[normalizeName(name)]
 	return f, ok
 }
 
 func (r *Registry) processorFactory(name string) (ProcessorFactory, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	f, ok := r.processors[normalizeName(name)]
 	return f, ok
 }
@@ -100,6 +102,22 @@ func (r *Registry) registerBuiltins() {
 		return NewTextSink(w, TextSinkOptions{
 			TimeLayout: getStringParam(params, "time_layout", ""),
 		}), nil
+	})
+
+	_ = r.RegisterSink("file", func(params map[string]any) (Sink, error) {
+		path := getStringParam(params, "path", "")
+		if path == "" {
+			return nil, fmt.Errorf("unilog: missing %q", "path")
+		}
+
+		return NewFileSink(FileSinkOptions{
+			Path:   path,
+			Format: getStringParam(params, "format", "json"),
+			Perm:   getFileModeParam(params, "perm", 0o644),
+			TextOptions: TextSinkOptions{
+				TimeLayout: getStringParam(params, "time_layout", ""),
+			},
+		})
 	})
 
 	_ = r.RegisterProcessor("redact", func(params map[string]any) (Processor, error) {
@@ -141,6 +159,9 @@ type SinkConfig struct {
 	Type     string
 	Params   map[string]any
 	MinLevel *Level
+
+	Next  *SinkConfig
+	Sinks []SinkConfig
 }
 
 type ProcessorConfig struct {
@@ -166,30 +187,9 @@ func BuildFromConfig(cfg Config, registry *Registry) (Logger, error) {
 		processors = append(processors, p)
 	}
 
-	sinks := make([]Sink, 0, len(cfg.Sinks))
-	for _, sc := range cfg.Sinks {
-		factory, ok := registry.sinkFactory(sc.Type)
-		if !ok {
-			return nil, fmt.Errorf("unilog: unknown sink type %q", sc.Type)
-		}
-		sink, err := factory(copyMap(sc.Params))
-		if err != nil {
-			return nil, fmt.Errorf("unilog: build sink %q: %w", sc.Type, err)
-		}
-		if sc.MinLevel != nil {
-			sink = NewLevelFilterSink(*sc.MinLevel, sink)
-		}
-		sinks = append(sinks, sink)
-	}
-
-	var sink Sink = NopSink{}
-	switch len(sinks) {
-	case 0:
-		sink = NopSink{}
-	case 1:
-		sink = sinks[0]
-	default:
-		sink = NewFanoutSink(sinks...)
+	sink, err := buildSinks(cfg.Sinks, registry)
+	if err != nil {
+		return nil, err
 	}
 
 	return New(sink, Options{
@@ -200,6 +200,102 @@ func BuildFromConfig(cfg Config, registry *Registry) (Logger, error) {
 		AddStack:        cfg.AddStack,
 		OnInternalError: cfg.OnInternalError,
 	}, processors...), nil
+}
+
+func buildSinks(configs []SinkConfig, registry *Registry) (Sink, error) {
+	switch len(configs) {
+	case 0:
+		return NopSink{}, nil
+	case 1:
+		return buildSink(configs[0], registry)
+	default:
+		children := make([]Sink, 0, len(configs))
+		for _, sc := range configs {
+			child, err := buildSink(sc, registry)
+			if err != nil {
+				return nil, err
+			}
+			children = append(children, child)
+		}
+		return NewFanoutSink(children...), nil
+	}
+}
+
+func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
+	t := normalizeName(cfg.Type)
+
+	var sink Sink
+	switch t {
+	case "fanout":
+		if len(cfg.Sinks) == 0 {
+			return nil, fmt.Errorf("unilog: fanout sink requires child sinks")
+		}
+		children := make([]Sink, 0, len(cfg.Sinks))
+		for _, childCfg := range cfg.Sinks {
+			child, err := buildSink(childCfg, registry)
+			if err != nil {
+				return nil, err
+			}
+			children = append(children, child)
+		}
+		sink = NewFanoutSink(children...)
+
+	case "async":
+		if cfg.Next == nil {
+			return nil, fmt.Errorf("unilog: async sink requires next sink")
+		}
+		next, err := buildSink(*cfg.Next, registry)
+		if err != nil {
+			return nil, err
+		}
+		sink = NewAsyncSink(next, AsyncSinkOptions{
+			BufferSize:  getIntParam(cfg.Params, "buffer_size", 256),
+			BlockOnFull: getBoolParam(cfg.Params, "block_on_full", false),
+		})
+
+	case "retry":
+		if cfg.Next == nil {
+			return nil, fmt.Errorf("unilog: retry sink requires next sink")
+		}
+		next, err := buildSink(*cfg.Next, registry)
+		if err != nil {
+			return nil, err
+		}
+		sink = NewRetrySink(next, RetrySinkOptions{
+			MaxAttempts:    getIntParam(cfg.Params, "max_attempts", 3),
+			InitialBackoff: getDurationParam(cfg.Params, "initial_backoff", 50*time.Millisecond),
+			MaxBackoff:     getDurationParam(cfg.Params, "max_backoff", time.Second),
+			Multiplier:     getFloat64Param(cfg.Params, "multiplier", 2),
+		})
+
+	default:
+		factory, ok := registry.sinkFactory(cfg.Type)
+		if !ok {
+			return nil, fmt.Errorf("unilog: unknown sink type %q", cfg.Type)
+		}
+		var err error
+		sink, err = factory(copyMap(cfg.Params))
+		if err != nil {
+			return nil, fmt.Errorf("unilog: build sink %q: %w", cfg.Type, err)
+		}
+	}
+
+	if cfg.MinLevel != nil {
+		sink = NewLevelFilterSink(*cfg.MinLevel, sink)
+	}
+
+	return sink, nil
+}
+
+func copyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func normalizeName(s string) string {
@@ -223,38 +319,11 @@ func getStringParam(params map[string]any, key, def string) string {
 	if !ok {
 		return def
 	}
-
 	s, ok := v.(string)
 	if !ok {
 		return def
 	}
 	return s
-}
-
-func getStringSliceParam(params map[string]any, key string) ([]string, error) {
-	v, ok := params[key]
-	if !ok {
-		return nil, fmt.Errorf("unilog: missing %q", key)
-	}
-
-	switch x := v.(type) {
-	case []string:
-		out := make([]string, len(x))
-		copy(out, x)
-		return out, nil
-	case []any:
-		out := make([]string, 0, len(x))
-		for _, item := range x {
-			s, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("unilog: %q contains non-string value", key)
-			}
-			out = append(out, s)
-		}
-		return out, nil
-	default:
-		return nil, fmt.Errorf("unilog: %q must be []string", key)
-	}
 }
 
 func getBoolParam(params map[string]any, key string, def bool) bool {
@@ -293,13 +362,127 @@ func getUint64Param(params map[string]any, key string, def uint64) uint64 {
 	return def
 }
 
-func copyMap(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return map[string]any{}
+func getIntParam(params map[string]any, key string, def int) int {
+	v, ok := params[key]
+	if !ok {
+		return def
 	}
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = v
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case int32:
+		return int(x)
+	case uint:
+		return int(x)
+	case uint64:
+		return int(x)
+	case float64:
+		return int(x)
+	default:
+		return def
 	}
-	return out
+}
+
+func getFloat64Param(params map[string]any, key string, def float64) float64 {
+	v, ok := params[key]
+	if !ok {
+		return def
+	}
+	switch x := v.(type) {
+	case float64:
+		return x
+	case float32:
+		return float64(x)
+	case int:
+		return float64(x)
+	case int64:
+		return float64(x)
+	default:
+		return def
+	}
+}
+
+func getDurationParam(params map[string]any, key string, def time.Duration) time.Duration {
+	v, ok := params[key]
+	if !ok {
+		return def
+	}
+	switch x := v.(type) {
+	case time.Duration:
+		return x
+	case string:
+		d, err := time.ParseDuration(x)
+		if err != nil {
+			return def
+		}
+		return d
+	case int:
+		return time.Duration(x)
+	case int64:
+		return time.Duration(x)
+	case float64:
+		return time.Duration(x)
+	default:
+		return def
+	}
+}
+
+func getFileModeParam(params map[string]any, key string, def fs.FileMode) fs.FileMode {
+	v, ok := params[key]
+	if !ok {
+		return def
+	}
+	switch x := v.(type) {
+	case fs.FileMode:
+		return x
+	case uint32:
+		return fs.FileMode(x)
+	case uint64:
+		return fs.FileMode(x)
+	case int:
+		return fs.FileMode(x)
+	default:
+		return def
+	}
+}
+
+func getStringSliceParam(params map[string]any, key string) ([]string, error) {
+	v, ok := params[key]
+	if !ok {
+		return nil, fmt.Errorf("unilog: missing %q", key)
+	}
+
+	switch x := v.(type) {
+	case []string:
+		out := make([]string, len(x))
+		copy(out, x)
+		return out, nil
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("unilog: %q contains non-string value", key)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unilog: %q must be []string", key)
+	}
+}
+
+func joinErrors(errs ...error) error {
+	var nonNil []error
+	for _, err := range errs {
+		if err != nil {
+			nonNil = append(nonNil, err)
+		}
+	}
+	if len(nonNil) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w", nonNil[0])
 }

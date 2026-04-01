@@ -1,14 +1,15 @@
 package unilog
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
-func TestBuildFromCOnfigBuildsPipeline(t *testing.T) {
-	var buf bytes.Buffer
+func TestBuildFromConfigBuildsPipeline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.log")
 
 	cfg := Config{
 		Service:     "billing-api",
@@ -16,11 +17,27 @@ func TestBuildFromCOnfigBuildsPipeline(t *testing.T) {
 		Level:       DebugLevel,
 		Sinks: []SinkConfig{
 			{
-				Type: "json",
+				Type: "async",
 				Params: map[string]any{
-					"writer": &buf,
+					"buffer_size": 16,
 				},
-				MinLevel: levelPtr(InfoLevel),
+				Next: &SinkConfig{
+					Type: "retry",
+					Params: map[string]any{
+						"max_attempts":    3,
+						"initail_backoff": "1ms",
+						"max_backoff":     "2ms",
+						"multiplier":      2.0,
+					},
+					Next: &SinkConfig{
+						Type: "file",
+						Params: map[string]any{
+							"path":   path,
+							"format": "json",
+						},
+						MinLevel: levelPtr(InfoLevel),
+					},
+				},
 			},
 		},
 		Processors: []ProcessorConfig{
@@ -42,9 +59,21 @@ func TestBuildFromCOnfigBuildsPipeline(t *testing.T) {
 	log.Debug(context.Background(), "skip me", String("password", "secret"))
 	log.Info(context.Background(), "keep me", String("password", "secret"))
 
+	if err := log.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if err := log.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
 	var decoded map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
-		t.Fatalf("invalid JSON: %v; body=%s", err, buf.String())
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("invalid JSON: %v; body=%s", err, string(b))
 	}
 
 	if decoded["message"] != "keep me" {
@@ -56,10 +85,22 @@ func TestBuildFromCOnfigBuildsPipeline(t *testing.T) {
 	}
 }
 
-func TestBuildFromCOnfigUnknownSinkFails(t *testing.T) {
+func TestBuildFromConfigUnknownSinkFails(t *testing.T) {
 	_, err := BuildFromConfig(Config{
 		Sinks: []SinkConfig{
 			{Type: "does-not-exist"},
+		},
+	}, nil)
+
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+}
+
+func TestBuildFromCOnfigAsyncWithoutNextFails(t *testing.T) {
+	_, err := BuildFromConfig(Config{
+		Sinks: []SinkConfig{
+			{Type: "async"},
 		},
 	}, nil)
 
