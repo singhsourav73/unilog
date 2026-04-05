@@ -120,6 +120,25 @@ func (r *Registry) registerBuiltins() {
 		})
 	})
 
+	_ = r.RegisterSink("http", func(params map[string]any) (Sink, error) {
+		url := getStringParam(params, "url", "")
+		if url == "" {
+			return nil, fmt.Errorf("unilog: missing url")
+		}
+
+		headers, err := getStringMapParam(params, "headers")
+		if err != nil {
+			return nil, err
+		}
+
+		return NewHTTPSink(HTTPSinkOptions{
+			URL:     url,
+			Method:  getStringParam(params, "method", "POST"),
+			Headers: headers,
+			Timeout: getDurationParam(params, "timeout", 5*time.Second),
+		})
+	})
+
 	_ = r.RegisterProcessor("redact", func(params map[string]any) (Processor, error) {
 		keys, err := getStringSliceParam(params, "keys")
 		if err != nil {
@@ -143,30 +162,30 @@ func (r *Registry) registerBuiltins() {
 }
 
 type Config struct {
-	Service     string
-	Environment string
-	Level       Level
-	AddCaller   bool
-	AddStack    bool
+	Service     string `json:"service" yaml:"service"`
+	Environment string `json:"environment" yaml:"environment"`
+	Level       Level  `json:"level" yaml:"level"`
+	AddCaller   bool   `json:"add_caller" yaml:"add_caller"`
+	AddStack    bool   `json:"add_stack" yaml:"add_stack"`
 
-	Sinks      []SinkConfig
-	Processors []ProcessorConfig
+	Sinks      []SinkConfig      `json:"sinks" yaml:"sinks"`
+	Processors []ProcessorConfig `json:"processors" yaml:"processors"`
 
-	OnInternalError InternalErrorHandler
+	OnInternalError InternalErrorHandler `json:"-" yaml:"-"`
 }
 
 type SinkConfig struct {
-	Type     string
-	Params   map[string]any
-	MinLevel *Level
+	Type     string         `json:"type" yaml:"type"`
+	Params   map[string]any `json:"params" yaml:"params"`
+	MinLevel *Level         `json:"min_level,omitempty" yaml:"min_level,omitempty"`
 
-	Next  *SinkConfig
-	Sinks []SinkConfig
+	Next  *SinkConfig  `json:"next,omitempty" yaml:"next,omitempty"`
+	Sinks []SinkConfig `json:"sinks,omitempty" yaml:"sinks,omitempty"`
 }
 
 type ProcessorConfig struct {
-	Type   string
-	Params map[string]any
+	Type   string         `json:"type" yaml:"type"`
+	Params map[string]any `json:"params" yaml:"params"`
 }
 
 func BuildFromConfig(cfg Config, registry *Registry) (Logger, error) {
@@ -266,6 +285,19 @@ func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
 			InitialBackoff: getDurationParam(cfg.Params, "initial_backoff", 50*time.Millisecond),
 			MaxBackoff:     getDurationParam(cfg.Params, "max_backoff", time.Second),
 			Multiplier:     getFloat64Param(cfg.Params, "multiplier", 2),
+		})
+
+	case "circuit_breaker":
+		if cfg.Next == nil {
+			return nil, fmt.Errorf("unilog: circuit_breaker sink requires next sink")
+		}
+		next, err := buildSink(*cfg.Next, registry)
+		if err != nil {
+			return nil, err
+		}
+		sink = NewCircuitBreakerSink(next, CircuitBreakerOptions{
+			FailureThreshold: getIntParam(cfg.Params, "failure_threshold", 3),
+			OpenTimeout:      getDurationParam(cfg.Params, "open_timeout", 5*time.Second),
 		})
 
 	default:
@@ -471,6 +503,36 @@ func getStringSliceParam(params map[string]any, key string) ([]string, error) {
 		return out, nil
 	default:
 		return nil, fmt.Errorf("unilog: %q must be []string", key)
+	}
+}
+
+func getStringMapParam(params map[string]any, key string) (map[string]string, error) {
+	v, ok := params[key]
+	if !ok {
+		return map[string]string{}, nil
+	}
+
+	switch x := v.(type) {
+	case map[string]string:
+		out := make(map[string]string, len(x))
+		for k, v := range x {
+			out[k] = v
+		}
+		return out, nil
+
+	case map[string]any:
+		out := make(map[string]string, len(x))
+		for k, v := range x {
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("unilog: %q contains non-string value for key %q", key, k)
+			}
+			out[k] = s
+		}
+		return out, nil
+
+	default:
+		return nil, fmt.Errorf("unilog: %q must be map[string]string", key)
 	}
 }
 

@@ -25,33 +25,6 @@ In many Go services, logging starts simple and gradually turns into infrastructu
 - **application logging API** from **vendor-specific integrations**
 - **event transformation** from **sink implementations**
 
-## Current status
-
-Milestone 2 is complete.
-
-Implemented so far:
-
-- structured logger API
-- normalized `Event` model
-- immutable child loggers
-- context propagation helpers
-- `JSONSink`
-- `TextSink`
-- `FanoutSink`
-- `LevelFilterSink`
-- `RedactionProcessor`
-- `SamplingProcessor`
-- config-driven builder with registry-based sink and processor assembly
-- unit tests for the core pipeline
-
-Not implemented yet:
-
-- file sink
-- async/buffered delivery
-- retries/backoff
-- YAML/env config loader
-- Sentry, Datadog, OTLP, or other remote sinks
-
 ## Installation
 
 ```bash
