@@ -22,7 +22,7 @@ func NewFanoutSink(sinks ...Sink) *FanoutSink {
 }
 
 func (f *FanoutSink) Name() string {
-	names := make([]string, len(f.sinks))
+	names := make([]string, 0, len(f.sinks))
 	for _, s := range f.sinks {
 		names = append(names, s.Name())
 	}

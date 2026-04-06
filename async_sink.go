@@ -32,8 +32,9 @@ type AsyncSink struct {
 	jobs chan asyncJob
 	done chan struct{}
 
-	mu     sync.Mutex
-	closed bool
+	mu      sync.RWMutex
+	closing bool
+	closed  bool
 
 	errMu      sync.Mutex
 	workerErrs []error
@@ -69,23 +70,80 @@ func (a *AsyncSink) Name() string {
 }
 
 func (a *AsyncSink) Write(ctx context.Context, event Event) error {
-	a.mu.Lock()
-	closed := a.closed
-	a.mu.Unlock()
-
-	if closed {
-		return ErrAsyncSinkClosed
-	}
-
 	job := asyncJob{
 		ctx:   contextWithoutCancel(ctx),
 		event: ptrEvent(cloneEvent(event)),
 	}
+	return a.enqueue(ctx, job, false)
+}
 
-	if a.opts.BlockOnFull {
-		a.jobs <- job
-		a.enqueued.Add(1)
+func (a *AsyncSink) Sync(ctx context.Context) error {
+	resp := make(chan error, 1)
+	if err := a.enqueue(ctx, asyncJob{ctx: contextWithoutCancel(ctx), flush: resp}, true); err != nil {
+		return err
+	}
+	return waitAsyncResponse(ctx, resp)
+}
+
+func (a *AsyncSink) Close(ctx context.Context) error {
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
 		return nil
+	}
+	if a.closing {
+		a.mu.Unlock()
+		<-a.done
+		return nil
+	}
+	a.closing = true
+	a.mu.Unlock()
+
+	resp := make(chan error, 1)
+	if err := a.enqueue(ctx, asyncJob{ctx: contextWithoutCancel(ctx), close: resp}, true); err != nil {
+		a.mu.Lock()
+		a.closing = false
+		a.mu.Unlock()
+		return err
+	}
+
+	err := waitAsyncResponse(ctx, resp)
+	<-a.done
+	return err
+}
+
+func (a *AsyncSink) Stats() AsyncSinkStats {
+	return AsyncSinkStats{
+		Enqueued: a.enqueued.Load(),
+		Dropped:  a.dropped.Load(),
+	}
+}
+
+func (a *AsyncSink) enqueue(ctx context.Context, job asyncJob, force bool) error {
+	a.mu.RLock()
+	closing := a.closing
+	closed := a.closed
+	a.mu.RUnlock()
+
+	isControlJob := job.flush != nil || job.close != nil
+
+	if closed {
+		return ErrAsyncSinkClosed
+	}
+	if closing && !isControlJob {
+		return ErrAsyncSinkClosed
+	}
+
+	if force || a.opts.BlockOnFull {
+		select {
+		case a.jobs <- job:
+			a.enqueued.Add(1)
+			return nil
+		case <-ctxDone(ctx):
+			return context.Cause(ctx)
+		case <-a.done:
+			return ErrAsyncSinkClosed
+		}
 	}
 
 	select {
@@ -99,54 +157,17 @@ func (a *AsyncSink) Write(ctx context.Context, event Event) error {
 	}
 }
 
-func (a *AsyncSink) Sync(ctx context.Context) error {
-	a.mu.Lock()
-	closed := a.closed
-	a.mu.Unlock()
-
-	if closed {
-		return ErrAsyncSinkClosed
-	}
-
-	resp := make(chan error, 1)
-	a.jobs <- asyncJob{
-		ctx:   contextWithoutCancel(ctx),
-		flush: resp,
-	}
-	return <-resp
-}
-
-func (a *AsyncSink) Close(ctx context.Context) error {
-	a.mu.Lock()
-	if a.closed {
-		a.mu.Unlock()
-		return nil
-	}
-	a.closed = true
-	a.mu.Unlock()
-
-	resp := make(chan error, 1)
-	a.jobs <- asyncJob{
-		ctx:   contextWithoutCancel(ctx),
-		close: resp,
-	}
-
-	err := <-resp
-	<-a.done
-	return err
-}
-
-func (a *AsyncSink) Stats() AsyncSinkStats {
-	return AsyncSinkStats{
-		Enqueued: a.enqueued.Load(),
-		Dropped:  a.dropped.Load(),
-	}
-}
-
 func (a *AsyncSink) run() {
 	defer close(a.done)
+	defer func() {
+		a.mu.Lock()
+		a.closed = true
+		a.closing = false
+		a.mu.Unlock()
+	}()
 
-	for job := range a.jobs {
+	for {
+		job := <-a.jobs
 		switch {
 		case job.event != nil:
 			if err := a.next.Write(job.ctx, *job.event); err != nil {
@@ -186,6 +207,22 @@ func (a *AsyncSink) drainWorkerErrors() error {
 	err := errors.Join(a.workerErrs...)
 	a.workerErrs = nil
 	return err
+}
+
+func waitAsyncResponse(ctx context.Context, resp <-chan error) error {
+	select {
+	case err := <-resp:
+		return err
+	case <-ctxDone(ctx):
+		return context.Cause(ctx)
+	}
+}
+
+func ctxDone(ctx context.Context) <-chan struct{} {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Done()
 }
 
 func contextWithoutCancel(ctx context.Context) context.Context {
