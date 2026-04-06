@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,6 +107,60 @@ func TestBuildFromCOnfigAsyncWithoutNextFails(t *testing.T) {
 
 	if err == nil {
 		t.Fatalf("expected error, got nil")
+	}
+}
+
+func TestBuildFromConfigContextEnricherUsesUserFieldName(t *testing.T) {
+	var out strings.Builder
+	cfg := Config{
+		Level: InfoLevel,
+		Sinks: []SinkConfig{
+			{
+				Type: "json",
+				Params: map[string]any{
+					"writer": &out,
+				},
+			},
+		},
+		Processors: []ProcessorConfig{
+			{
+				Type: "context_enricher",
+				Params: map[string]any{
+					"user_field_name":    "actor_id",
+					"tenant_field_name":  "org_id",
+					"session_field_name": "session",
+				},
+			},
+		},
+	}
+
+	log, err := BuildFromConfig(cfg, nil)
+	if err != nil {
+		t.Fatalf("BuildFromConfig() error = %v", err)
+	}
+
+	ctx := context.Background()
+	ctx = WithUserID(ctx, "u-1")
+	ctx = WithTenantID(ctx, "t-1")
+	ctx = WithSessionID(ctx, "s-1")
+	log.Info(ctx, "request done")
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &decoded); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+
+	if got := decoded["actor_id"]; got != "u-1" {
+		t.Fatalf("actor_id = %v, want u-1", got)
+	}
+	if got := decoded["org_id"]; got != "t-1" {
+		t.Fatalf("org_id = %v, want t-1", got)
+	}
+	if got := decoded["session"]; got != "s-1" {
+		t.Fatalf("session = %v, want s-1", got)
+	}
+	if _, exists := decoded["user_id"]; exists {
+		t.Fatalf("unexpected default user_id key in output")
 	}
 }
 
