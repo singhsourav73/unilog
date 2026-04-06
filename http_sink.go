@@ -44,9 +44,7 @@ func NewHTTPSink(opts HTTPSinkOptions) (*HTTPSink, error) {
 		if timeout <= 0 {
 			timeout = 5 * time.Second
 		}
-		client = &http.Client{
-			Timeout: timeout,
-		}
+		client = &http.Client{Timeout: timeout}
 	}
 
 	headers := make(map[string]string, len(opts.Headers))
@@ -109,10 +107,5 @@ func (s *HTTPSink) Write(ctx context.Context, event Event) error {
 	return nil
 }
 
-func (s *HTTPSink) Sync(context.Context) error {
-	return nil
-}
-
-func (s *HTTPSink) Close(context.Context) error {
-	return nil
-}
+func (s *HTTPSink) Sync(context.Context) error  { return nil }
+func (s *HTTPSink) Close(context.Context) error { return nil }

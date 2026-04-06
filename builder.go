@@ -111,7 +111,10 @@ func (r *Registry) registerBuiltins() {
 	})
 
 	_ = r.RegisterSink("file", func(params map[string]any) (Sink, error) {
-		path := getStringParam(params, "path", "")
+		path, err := getOptionalStringParam(params, "path", "")
+		if err != nil {
+			return nil, err
+		}
 		if path == "" {
 			return nil, fmt.Errorf("unilog: missing %q", "path")
 		}
@@ -137,9 +140,7 @@ func (r *Registry) registerBuiltins() {
 		case "", "json":
 			encoder = NewJSONEncoder()
 		case "text":
-			encoder = NewTextEncoder(TextEncoderOptions{
-				TimeLayout: timeLayout,
-			})
+			encoder = NewTextEncoder(TextEncoderOptions{TimeLayout: timeLayout})
 		default:
 			return nil, fmt.Errorf("unilog: unsupported file sink format %q", format)
 		}
@@ -152,7 +153,10 @@ func (r *Registry) registerBuiltins() {
 	})
 
 	_ = r.RegisterSink("http", func(params map[string]any) (Sink, error) {
-		url := getStringParam(params, "url", "")
+		url, err := getOptionalStringParam(params, "url", "")
+		if err != nil {
+			return nil, err
+		}
 		if url == "" {
 			return nil, fmt.Errorf("unilog: missing url")
 		}
@@ -188,9 +192,7 @@ func (r *Registry) registerBuiltins() {
 		case "", "json":
 			encoder = NewJSONEncoder()
 		case "text":
-			encoder = NewTextEncoder(TextEncoderOptions{
-				TimeLayout: timeLayout,
-			})
+			encoder = NewTextEncoder(TextEncoderOptions{TimeLayout: timeLayout})
 		default:
 			return nil, fmt.Errorf("unilog: unsupported http sink format %q", format)
 		}
