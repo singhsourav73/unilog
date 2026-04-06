@@ -5,38 +5,27 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"strings"
 	"sync"
 )
 
 type FileSinkOptions struct {
-	Path        string
-	Format      string // "json" or "text"
-	Perm        fs.FileMode
-	TextOptions TextSinkOptions
+	Path    string
+	Encoder Encoder
+	Perm    fs.FileMode
 }
 
 type FileSink struct {
 	mu       sync.Mutex
 	file     *os.File
 	delegate Sink
-	format   string
 	path     string
 	closed   bool
 }
 
 func NewFileSink(opts FileSinkOptions) (*FileSink, error) {
-	path := strings.TrimSpace(opts.Path)
+	path := opts.Path
 	if path == "" {
 		return nil, fmt.Errorf("unilog: file sink path is empty")
-	}
-
-	format := strings.ToLower(strings.TrimSpace(opts.Format))
-	if format == "" {
-		format = "json"
-	}
-	if format != "json" && format != "text" {
-		return nil, fmt.Errorf("unilog: unsuppoted file sink format: %q", format)
 	}
 
 	perm := opts.Perm
@@ -49,27 +38,26 @@ func NewFileSink(opts FileSinkOptions) (*FileSink, error) {
 		return nil, fmt.Errorf("unilog: open file sink: %w", err)
 	}
 
-	var delegate Sink
-	switch format {
-	case "json":
-		delegate = NewJSONSink(f)
-	case "text":
-		delegate = NewTextSink(f, opts.TextOptions)
-	default:
+	encoder := opts.Encoder
+	if encoder == nil {
+		encoder = NewJSONEncoder()
+	}
+
+	delegate, err := NewWriterSink(f, encoder)
+	if err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("unilog: unsupported file sink format %q", format)
+		return nil, err
 	}
 
 	return &FileSink{
 		file:     f,
 		delegate: delegate,
-		format:   format,
 		path:     path,
 	}, nil
 }
 
 func (s *FileSink) Name() string {
-	return "file(" + s.format + ")"
+	return "file(" + s.delegate.Name() + ")"
 }
 
 func (s *FileSink) Write(ctx context.Context, event Event) error {
