@@ -3,6 +3,8 @@ package unilog
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -95,5 +97,117 @@ func TestHTTPSinkReturnsErrorOnNon2xx(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected error, got nil")
+	}
+}
+
+func TestHTTPSinkSetsDefaultContentTypeFromEncoder(t *testing.T) {
+	var gotContentType string
+	var gotBody string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		gotContentType = r.Header.Get("Content-Type")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	sink, err := NewHTTPSink(HTTPSinkOptions{
+		URL:     srv.URL,
+		Encoder: NewTextEncoder(TextEncoderOptions{TimeLayout: time.RFC3339}),
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPSink() error = %v", err)
+	}
+
+	err = sink.Write(context.Background(), Event{
+		Time:    time.Unix(0, 0).UTC(),
+		Level:   InfoLevel,
+		Message: "hello world",
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if gotContentType != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want %q", gotContentType, "text/plain; charset=utf-8")
+	}
+	if gotBody == "" || gotBody[0] == '{' {
+		t.Fatalf("expected text body, got %q", gotBody)
+	}
+}
+
+func TestHTTPSinkExplicitContentTypeOverridesEncoderDefault(t *testing.T) {
+	var gotContentType string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	sink, err := NewHTTPSink(HTTPSinkOptions{
+		URL:     srv.URL,
+		Encoder: NewJSONEncoder(),
+		Headers: map[string]string{
+			"Content-Type": "application/x-custom",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPSink() error = %v", err)
+	}
+
+	err = sink.Write(context.Background(), Event{
+		Time:    time.Unix(0, 0).UTC(),
+		Level:   InfoLevel,
+		Message: "hello",
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if gotContentType != "application/x-custom" {
+		t.Fatalf("Content-Type = %q, want %q", gotContentType, "application/x-custom")
+	}
+}
+
+type failingEncoder struct{}
+
+func (failingEncoder) Name() string        { return "failing" }
+func (failingEncoder) ContentType() string { return "application/test" }
+func (failingEncoder) Encode(Event) ([]byte, error) {
+	return nil, errors.New("encode failed")
+}
+
+func TestHTTPSinkPropagatesEncoderError(t *testing.T) {
+	hitServer := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitServer = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	sink, err := NewHTTPSink(HTTPSinkOptions{
+		URL:     srv.URL,
+		Encoder: failingEncoder{},
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPSink() error = %v", err)
+	}
+
+	err = sink.Write(context.Background(), Event{
+		Time:    time.Unix(0, 0).UTC(),
+		Level:   InfoLevel,
+		Message: "hello",
+	})
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if hitServer {
+		t.Fatalf("server should not have been called on encode failure")
 	}
 }
