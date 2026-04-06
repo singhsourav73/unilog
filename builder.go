@@ -483,6 +483,46 @@ func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
 			OpenTimeout:      openTimeout,
 		})
 
+	case "batch":
+		if cfg.Next == nil {
+			return nil, fmt.Errorf("unilog: batch sink requires next sink")
+		}
+		next, err := buildSink(*cfg.Next, registry)
+		if err != nil {
+			return nil, err
+		}
+
+		maxBatchSize, err := getOptionalIntParam(cfg.Params, "max_batch_size", 100)
+		if err != nil {
+			return nil, err
+		}
+
+		flushInterval, err := getOptionalDurationParam(cfg.Params, "flush_interval", time.Second)
+		if err != nil {
+			return nil, err
+		}
+
+		maxQueueSize, err := getOptionalIntParam(cfg.Params, "max_queue_size", maxBatchSize*4)
+		if err != nil {
+			return nil, err
+		}
+
+		policyStr, err := getOptionalStringParam(cfg.Params, "overflow_policy", "drop_newest")
+		if err != nil {
+			return nil, err
+		}
+		policy, err := ParseOverflowPolicy(policyStr)
+		if err != nil {
+			return nil, err
+		}
+
+		sink = NewBatchSink(next, BatchSinkOptions{
+			MaxBatchSize:   maxBatchSize,
+			FlushInterval:  flushInterval,
+			MaxQueueSize:   maxQueueSize,
+			OverflowPolicy: policy,
+		})
+
 	default:
 		factory, ok := registry.sinkFactory(cfg.Type)
 		if !ok {

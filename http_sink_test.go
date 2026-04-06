@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -209,5 +210,150 @@ func TestHTTPSinkPropagatesEncoderError(t *testing.T) {
 	}
 	if hitServer {
 		t.Fatalf("server should not have been called on encode failure")
+	}
+}
+
+func TestHTTPSinkWriteBatchJSONSendsSingleRequestWithArrayPayload(t *testing.T) {
+	var reqCount int
+	var gotBody []byte
+	var gotContentType string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		gotContentType = r.Header.Get("Content-Type")
+		defer r.Body.Close()
+
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	sink, err := NewHTTPSink(HTTPSinkOptions{
+		URL:     srv.URL,
+		Encoder: NewJSONEncoder(),
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPSink() error = %v", err)
+	}
+
+	events := []Event{
+		{
+			Time:    time.Unix(0, 0).UTC(),
+			Level:   InfoLevel,
+			Message: "one",
+		},
+		{
+			Time:    time.Unix(1, 0).UTC(),
+			Level:   ErrorLevel,
+			Message: "two",
+		},
+	}
+
+	if err := sink.WriteBatch(context.Background(), events); err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+
+	if reqCount != 1 {
+		t.Fatalf("request count = %d, want 1", reqCount)
+	}
+
+	if gotContentType != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", gotContentType)
+	}
+
+	var payload []map[string]any
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatalf("invalid JSON array body: %v; body=%s", err, string(gotBody))
+	}
+
+	if len(payload) != 2 {
+		t.Fatalf("payload len = %d, want 2", len(payload))
+	}
+
+	if payload[0]["message"] != "one" {
+		t.Fatalf("first message = %v, want one", payload[0]["message"])
+	}
+	if payload[1]["message"] != "two" {
+		t.Fatalf("second message = %v, want two", payload[1]["message"])
+	}
+}
+
+func TestHTTPSinkWriteBatchFallsBackForNonJSONEncoder(t *testing.T) {
+	var reqCount int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	sink, err := NewHTTPSink(HTTPSinkOptions{
+		URL:     srv.URL,
+		Encoder: NewTextEncoder(TextEncoderOptions{TimeLayout: time.RFC3339}),
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPSink() error = %v", err)
+	}
+
+	events := []Event{
+		{
+			Time:    time.Unix(0, 0).UTC(),
+			Level:   InfoLevel,
+			Message: "one",
+		},
+		{
+			Time:    time.Unix(1, 0).UTC(),
+			Level:   InfoLevel,
+			Message: "two",
+		},
+	}
+
+	if err := sink.WriteBatch(context.Background(), events); err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+
+	if reqCount != 2 {
+		t.Fatalf("request count = %d, want 2", reqCount)
+	}
+}
+
+func TestHTTPSinkWriteBatchPropagatesHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	sink, err := NewHTTPSink(HTTPSinkOptions{
+		URL:     srv.URL,
+		Encoder: NewJSONEncoder(),
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPSink() error = %v", err)
+	}
+
+	events := []Event{
+		{
+			Time:    time.Unix(0, 0).UTC(),
+			Level:   InfoLevel,
+			Message: "one",
+		},
+		{
+			Time:    time.Unix(1, 0).UTC(),
+			Level:   InfoLevel,
+			Message: "two",
+		},
+	}
+
+	err = sink.WriteBatch(context.Background(), events)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Fatalf("expected status code in error, got %v", err)
 	}
 }

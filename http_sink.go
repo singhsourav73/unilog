@@ -3,6 +3,7 @@ package unilog
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,7 +80,38 @@ func (s *HTTPSink) Write(ctx context.Context, event Event) error {
 	if err != nil {
 		return fmt.Errorf("unilog: encode event payload: %w", err)
 	}
+	return s.doRequest(ctx, body)
+}
 
+func (s *HTTPSink) WriteBatch(ctx context.Context, events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	if _, ok := s.encoder.(*JSONEncoder); !ok {
+		var err error
+		for _, ev := range events {
+			if e := s.Write(ctx, ev); e != nil {
+				err = joinErrors(err, e)
+			}
+		}
+		return err
+	}
+
+	payloads := make([]map[string]any, 0, len(events))
+	for _, ev := range events {
+		payloads = append(payloads, EventPayload(ev))
+	}
+
+	body, err := json.Marshal(payloads)
+	if err != nil {
+		return fmt.Errorf("unilog: encode batch payload: %w", err)
+	}
+
+	return s.doRequest(ctx, body)
+}
+
+func (s *HTTPSink) doRequest(ctx context.Context, body []byte) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
