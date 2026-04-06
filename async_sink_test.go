@@ -73,8 +73,8 @@ func (s *countingSink) Count() int {
 func TestAsyncSinkWriteRejectedAfterCloseStarts(t *testing.T) {
 	next := newBlockingSink()
 	sink := NewAsyncSink(next, AsyncSinkOptions{
-		BufferSize:  1,
-		BlockOnFull: true,
+		BufferSize:     1,
+		OverflowPolicy: OverflowBlock,
 	})
 
 	ctx := context.Background()
@@ -117,8 +117,8 @@ func TestAsyncSinkWriteRejectedAfterCloseStarts(t *testing.T) {
 func TestAsyncSinkBlockOnFullRespectsContext(t *testing.T) {
 	next := newBlockingSink()
 	sink := NewAsyncSink(next, AsyncSinkOptions{
-		BufferSize:  1,
-		BlockOnFull: true,
+		BufferSize:     1,
+		OverflowPolicy: OverflowBlock,
 	})
 
 	err := sink.Write(context.Background(), Event{Message: "first"})
@@ -159,8 +159,8 @@ func TestAsyncSinkDropsWhenBufferFull(t *testing.T) {
 	var mu sync.Mutex
 
 	sink := NewAsyncSink(next, AsyncSinkOptions{
-		BufferSize:  1,
-		BlockOnFull: false,
+		BufferSize:     1,
+		OverflowPolicy: OverflowDropNewest,
 		OnError: func(err error) {
 			if errors.Is(err, ErrAsyncBufferFull) {
 				mu.Lock()

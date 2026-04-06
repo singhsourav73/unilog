@@ -8,9 +8,9 @@ import (
 )
 
 type AsyncSinkOptions struct {
-	BufferSize  int
-	BlockOnFull bool
-	OnError     func(error)
+	BufferSize     int
+	OverflowPolicy OverflowPolicy
+	OnError        func(error)
 }
 
 type AsyncSinkStats struct {
@@ -53,6 +53,9 @@ func NewAsyncSink(next Sink, opts AsyncSinkOptions) *AsyncSink {
 	if opts.OnError == nil {
 		opts.OnError = func(error) {}
 	}
+	if opts.OverflowPolicy != OverflowBlock && opts.OverflowPolicy != OverflowDropNewest {
+		opts.OverflowPolicy = OverflowDropNewest
+	}
 
 	a := &AsyncSink{
 		next: next,
@@ -66,7 +69,7 @@ func NewAsyncSink(next Sink, opts AsyncSinkOptions) *AsyncSink {
 }
 
 func (a *AsyncSink) Name() string {
-	return "async->" + a.next.Name()
+	return "async(" + a.opts.OverflowPolicy.String() + ")->" + a.next.Name()
 }
 
 func (a *AsyncSink) Write(ctx context.Context, event Event) error {
@@ -134,7 +137,7 @@ func (a *AsyncSink) enqueue(ctx context.Context, job asyncJob, force bool) error
 		return ErrAsyncSinkClosed
 	}
 
-	if force || a.opts.BlockOnFull {
+	if force || a.opts.OverflowPolicy == OverflowBlock {
 		select {
 		case a.jobs <- job:
 			a.enqueued.Add(1)

@@ -402,23 +402,29 @@ func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
 		if cfg.Next == nil {
 			return nil, fmt.Errorf("unilog: async sink requires next sink")
 		}
+		next, err := buildSink(*cfg.Next, registry)
+		if err != nil {
+			return nil, err
+		}
 
 		bufferSize, err := getOptionalIntParam(cfg.Params, "buffer_size", 256)
 		if err != nil {
 			return nil, err
 		}
-		blockOnFull, err := getOptionalBoolParam(cfg.Params, "block_on_full", false)
+
+		policyStr, err := getOptionalStringParam(cfg.Params, "overflow_policy", "drop_newest")
 		if err != nil {
 			return nil, err
 		}
 
-		next, err := buildSink(*cfg.Next, registry)
+		policy, err := ParseOverflowPolicy(policyStr)
 		if err != nil {
 			return nil, err
 		}
+
 		sink = NewAsyncSink(next, AsyncSinkOptions{
-			BufferSize:  bufferSize,
-			BlockOnFull: blockOnFull,
+			BufferSize:     bufferSize,
+			OverflowPolicy: policy,
 		})
 
 	case "retry":

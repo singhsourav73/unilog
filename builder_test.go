@@ -262,3 +262,49 @@ func TestBuildFromConfigRejectsInvalidSamplingValue(t *testing.T) {
 		t.Fatalf("expected debug_every validation error, got %v", err)
 	}
 }
+
+func TestBuildFromConfigRejectsInvalidOverflowPolicy(t *testing.T) {
+	_, err := BuildFromConfig(Config{
+		Sinks: []SinkConfig{
+			{
+				Type: "async",
+				Params: map[string]any{
+					"overflow_policy": "explode",
+				},
+				Next: &SinkConfig{
+					Type: "json",
+					Params: map[string]any{
+						"writer": &bytes.Buffer{},
+					},
+				},
+			},
+		},
+	}, nil)
+
+	if err == nil || !strings.Contains(err.Error(), `"explode"`) {
+		t.Fatalf("expected overflow_policy parse error, got %v", err)
+	}
+}
+
+func TestBuildFromConfigRejectsInvalidOverflowPolicyType(t *testing.T) {
+	_, err := BuildFromConfig(Config{
+		Sinks: []SinkConfig{
+			{
+				Type: "async",
+				Params: map[string]any{
+					"overflow_policy": 123,
+				},
+				Next: &SinkConfig{
+					Type: "json",
+					Params: map[string]any{
+						"writer": &bytes.Buffer{},
+					},
+				},
+			},
+		},
+	}, nil)
+
+	if err == nil || !strings.Contains(err.Error(), `"overflow_policy"`) {
+		t.Fatalf("expected overflow_policy type error, got %v", err)
+	}
+}
