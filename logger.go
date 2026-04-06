@@ -28,9 +28,10 @@ type Logger interface {
 }
 
 type logger struct {
-	sink       Sink
-	processors []Processor
-	opts       Options
+	sink         Sink
+	processors   []Processor
+	interceptors []Interceptor
+	opts         Options
 
 	name       string
 	fields     []Field
@@ -38,21 +39,37 @@ type logger struct {
 }
 
 func New(sink Sink, opts Options, processors ...Processor) Logger {
+	return NewWithInterceptors(sink, opts, nil, processors...)
+}
+
+func NewWithInterceptors(
+	sink Sink,
+	opts Options,
+	interceptors []Interceptor,
+	processors ...Processor) Logger {
 	if sink == nil {
 		sink = NopSink{}
 	}
 
-	cp := make([]Processor, len(processors))
+	cp := make([]Processor, 0, len(processors))
 	for _, p := range processors {
 		if p != nil {
 			cp = append(cp, p)
 		}
 	}
 
+	icp := make([]Interceptor, 0, len(interceptors))
+	for _, in := range interceptors {
+		if in != nil {
+			icp = append(icp, in)
+		}
+	}
+
 	return &logger{
-		sink:       sink,
-		processors: cp,
-		opts:       opts.withDefaults(),
+		sink:         sink,
+		processors:   cp,
+		interceptors: icp,
+		opts:         opts.withDefaults(),
 	}
 }
 
@@ -114,19 +131,28 @@ func (l *logger) LogErr(ctx context.Context, level Level, err error, msg string,
 		ev.Stack = string(debug.Stack())
 	}
 
-	for _, p := range l.processors {
-		if p == nil {
-			continue
+	final := func(ctx context.Context, event Event) error {
+		for _, p := range l.processors {
+			if p == nil {
+				continue
+			}
+			if err := p.Process(ctx, &event); err != nil {
+				return err
+			}
 		}
-		if perr := p.Process(ctx, &ev); perr != nil {
-			l.opts.OnInternalError(ctx, perr)
+
+		if l.sink == nil {
+			return nil
 		}
+		return l.sink.Write(ctx, event)
 	}
 
-	if l.sink != nil {
-		if werr := l.sink.Write(ctx, ev); werr != nil {
-			l.opts.OnInternalError(ctx, werr)
+	handler := ChainInterceptors(final, l.interceptors...)
+	if err := handler(ctx, ev); err != nil {
+		if IsDropEvent(err) {
+			return
 		}
+		l.opts.OnInternalError(ctx, err)
 	}
 }
 
@@ -177,12 +203,13 @@ func (l *logger) Close(ctx context.Context) error {
 
 func (l *logger) clone() *logger {
 	return &logger{
-		sink:       l.sink,
-		processors: append([]Processor(nil), l.processors...),
-		opts:       l.opts,
-		name:       l.name,
-		fields:     append([]Field(nil), l.fields...),
-		defaultCtx: l.defaultCtx,
+		sink:         l.sink,
+		processors:   append([]Processor(nil), l.processors...),
+		interceptors: append([]Interceptor(nil), l.interceptors...),
+		opts:         l.opts,
+		name:         l.name,
+		fields:       cloneFields(l.fields),
+		defaultCtx:   l.defaultCtx,
 	}
 }
 
