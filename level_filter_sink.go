@@ -16,7 +16,7 @@ func NewLevelFilterSink(min Level, next Sink) *LevelFilterSink {
 }
 
 func (s *LevelFilterSink) Name() string {
-	return "level_filetr(" + s.min.String() + ")->" + s.next.Name()
+	return "level_filter(" + s.min.String() + ")->" + s.next.Name()
 }
 
 func (s *LevelFilterSink) Write(ctx context.Context, event Event) error {

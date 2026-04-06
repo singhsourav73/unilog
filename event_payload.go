@@ -2,6 +2,22 @@ package unilog
 
 import "time"
 
+var reservedPayloadKeys = map[string]struct{}{
+	"time":           {},
+	"level":          {},
+	"message":        {},
+	"service":        {},
+	"environment":    {},
+	"logger_name":    {},
+	"trace_id":       {},
+	"span_id":        {},
+	"request_id":     {},
+	"correlation_id": {},
+	"caller":         {},
+	"stack":          {},
+	"error":          {},
+}
+
 func EventPayload(event Event) map[string]any {
 	payload := make(map[string]any, len(event.Fields)+12)
 
@@ -41,6 +57,10 @@ func EventPayload(event Event) map[string]any {
 	}
 
 	for _, f := range event.Fields {
+		if _, reserved := reservedPayloadKeys[f.Key]; reserved {
+			payload["field."+f.Key] = normalizeFieldValue(f.Value)
+			continue
+		}
 		payload[f.Key] = normalizeFieldValue(f.Value)
 	}
 
