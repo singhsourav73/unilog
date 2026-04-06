@@ -165,7 +165,7 @@ func (r *Registry) registerBuiltins() {
 			IncludeUserID:    getBoolParam(params, "include_user_id", true),
 			IncludeTenantID:  getBoolParam(params, "include_tenant_id", true),
 			IncludeSessionID: getBoolParam(params, "include_session_id", true),
-			UserFieldName:    getStringParam(params, "user_fiels_name", "user_id"),
+			UserFieldName:    getStringParam(params, "user_field_name", "user_id"),
 			TenantFieldName:  getStringParam(params, "tenant_field_name", "tenant_id"),
 			SessionFieldName: getStringParam(params, "session_field_name", "session_id"),
 		}), nil
