@@ -3,7 +3,6 @@ package unilog
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +16,7 @@ type HTTPSinkOptions struct {
 	Headers map[string]string
 	Timeout time.Duration
 	Client  *http.Client
+	Encoder Encoder
 }
 
 type HTTPSink struct {
@@ -24,6 +24,7 @@ type HTTPSink struct {
 	method  string
 	headers map[string]string
 	client  *http.Client
+	encoder Encoder
 }
 
 func NewHTTPSink(opts HTTPSinkOptions) (*HTTPSink, error) {
@@ -53,8 +54,13 @@ func NewHTTPSink(opts HTTPSinkOptions) (*HTTPSink, error) {
 		headers[k] = v
 	}
 
+	encoder := opts.Encoder
+	if encoder == nil {
+		encoder = NewJSONEncoder()
+	}
+
 	if _, ok := headers["Content-Type"]; !ok {
-		headers["Content-Type"] = "application/json"
+		headers["Content-Type"] = encoder.ContentType()
 	}
 
 	return &HTTPSink{
@@ -62,19 +68,18 @@ func NewHTTPSink(opts HTTPSinkOptions) (*HTTPSink, error) {
 		method:  method,
 		headers: headers,
 		client:  client,
+		encoder: encoder,
 	}, nil
 }
 
 func (s *HTTPSink) Name() string {
-	return "http"
+	return "http(" + s.encoder.Name() + ")"
 }
 
 func (s *HTTPSink) Write(ctx context.Context, event Event) error {
-	payload := EventPayload(event)
-
-	body, err := json.Marshal(payload)
+	body, err := s.encoder.Encode(event)
 	if err != nil {
-		return fmt.Errorf("unilog: marshal event payload: %w", err)
+		return fmt.Errorf("unilog: encode event payload: %w", err)
 	}
 
 	if ctx == nil {

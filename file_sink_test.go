@@ -14,8 +14,8 @@ func TestFileSinkJSONWritesToDisk(t *testing.T) {
 	path := filepath.Join(dir, "app.json.log")
 
 	sink, err := NewFileSink(FileSinkOptions{
-		Path:   path,
-		Format: "json",
+		Path:    path,
+		Encoder: NewJSONEncoder(),
 	})
 	if err != nil {
 		t.Fatalf("NewFileSInk() error = %v", err)

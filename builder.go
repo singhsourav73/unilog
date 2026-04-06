@@ -110,13 +110,24 @@ func (r *Registry) registerBuiltins() {
 			return nil, fmt.Errorf("unilog: missing %q", "path")
 		}
 
-		return NewFileSink(FileSinkOptions{
-			Path:   path,
-			Format: getStringParam(params, "format", "json"),
-			Perm:   getFileModeParam(params, "perm", 0o644),
-			TextOptions: TextSinkOptions{
+		format := normalizeName(getStringParam(params, "format", "json"))
+
+		var encoder Encoder
+		switch format {
+		case "", "json":
+			encoder = NewJSONEncoder()
+		case "text":
+			encoder = NewTextEncoder(TextEncoderOptions{
 				TimeLayout: getStringParam(params, "time_layout", ""),
-			},
+			})
+		default:
+			return nil, fmt.Errorf("unilog: unsupported file sink format %q", format)
+		}
+
+		return NewFileSink(FileSinkOptions{
+			Path:    path,
+			Encoder: encoder,
+			Perm:    getFileModeParam(params, "perm", 0o644),
 		})
 	})
 
@@ -124,6 +135,19 @@ func (r *Registry) registerBuiltins() {
 		url := getStringParam(params, "url", "")
 		if url == "" {
 			return nil, fmt.Errorf("unilog: missing url")
+		}
+
+		format := normalizeName(getStringParam(params, "format", "json"))
+		var encoder Encoder
+		switch format {
+		case "", "json":
+			encoder = NewJSONEncoder()
+		case "text":
+			encoder = NewTextEncoder(TextEncoderOptions{
+				TimeLayout: getStringParam(params, "time_layout", ""),
+			})
+		default:
+			return nil, fmt.Errorf("unilog: unsupported http sink format %q", format)
 		}
 
 		headers, err := getStringMapParam(params, "headers")
@@ -136,6 +160,7 @@ func (r *Registry) registerBuiltins() {
 			Method:  getStringParam(params, "method", "POST"),
 			Headers: headers,
 			Timeout: getDurationParam(params, "timeout", 5*time.Second),
+			Encoder: encoder,
 		})
 	})
 
