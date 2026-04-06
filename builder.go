@@ -99,8 +99,14 @@ func (r *Registry) registerBuiltins() {
 		if err != nil {
 			return nil, err
 		}
+
+		timeLayout, err := getOptionalStringParam(params, "time_layout", "")
+		if err != nil {
+			return nil, err
+		}
+
 		return NewTextSink(w, TextSinkOptions{
-			TimeLayout: getStringParam(params, "time_layout", ""),
+			TimeLayout: timeLayout,
 		}), nil
 	})
 
@@ -110,7 +116,21 @@ func (r *Registry) registerBuiltins() {
 			return nil, fmt.Errorf("unilog: missing %q", "path")
 		}
 
-		format := normalizeName(getStringParam(params, "format", "json"))
+		format, err := getOptionalStringParam(params, "format", "json")
+		if err != nil {
+			return nil, err
+		}
+		format = normalizeName(format)
+
+		timeLayout, err := getOptionalStringParam(params, "time_layout", "")
+		if err != nil {
+			return nil, err
+		}
+
+		perm, err := getOptionalFileModeParam(params, "perm", 0o644)
+		if err != nil {
+			return nil, err
+		}
 
 		var encoder Encoder
 		switch format {
@@ -118,7 +138,7 @@ func (r *Registry) registerBuiltins() {
 			encoder = NewJSONEncoder()
 		case "text":
 			encoder = NewTextEncoder(TextEncoderOptions{
-				TimeLayout: getStringParam(params, "time_layout", ""),
+				TimeLayout: timeLayout,
 			})
 		default:
 			return nil, fmt.Errorf("unilog: unsupported file sink format %q", format)
@@ -127,7 +147,7 @@ func (r *Registry) registerBuiltins() {
 		return NewFileSink(FileSinkOptions{
 			Path:    path,
 			Encoder: encoder,
-			Perm:    getFileModeParam(params, "perm", 0o644),
+			Perm:    perm,
 		})
 	})
 
@@ -137,17 +157,15 @@ func (r *Registry) registerBuiltins() {
 			return nil, fmt.Errorf("unilog: missing url")
 		}
 
-		format := normalizeName(getStringParam(params, "format", "json"))
-		var encoder Encoder
-		switch format {
-		case "", "json":
-			encoder = NewJSONEncoder()
-		case "text":
-			encoder = NewTextEncoder(TextEncoderOptions{
-				TimeLayout: getStringParam(params, "time_layout", ""),
-			})
-		default:
-			return nil, fmt.Errorf("unilog: unsupported http sink format %q", format)
+		format, err := getOptionalStringParam(params, "format", "json")
+		if err != nil {
+			return nil, err
+		}
+		format = normalizeName(format)
+
+		timeLayout, err := getOptionalStringParam(params, "time_layout", "")
+		if err != nil {
+			return nil, err
 		}
 
 		headers, err := getStringMapParam(params, "headers")
@@ -155,11 +173,33 @@ func (r *Registry) registerBuiltins() {
 			return nil, err
 		}
 
+		method, err := getOptionalStringParam(params, "method", "POST")
+		if err != nil {
+			return nil, err
+		}
+
+		timeout, err := getOptionalDurationParam(params, "timeout", 5*time.Second)
+		if err != nil {
+			return nil, err
+		}
+
+		var encoder Encoder
+		switch format {
+		case "", "json":
+			encoder = NewJSONEncoder()
+		case "text":
+			encoder = NewTextEncoder(TextEncoderOptions{
+				TimeLayout: timeLayout,
+			})
+		default:
+			return nil, fmt.Errorf("unilog: unsupported http sink format %q", format)
+		}
+
 		return NewHTTPSink(HTTPSinkOptions{
 			URL:     url,
-			Method:  getStringParam(params, "method", "POST"),
+			Method:  method,
 			Headers: headers,
-			Timeout: getDurationParam(params, "timeout", 5*time.Second),
+			Timeout: timeout,
 			Encoder: encoder,
 		})
 	})
@@ -169,30 +209,91 @@ func (r *Registry) registerBuiltins() {
 		if err != nil {
 			return nil, err
 		}
+
+		mask, err := getOptionalStringParam(params, "mask", "***REDACTED***")
+		if err != nil {
+			return nil, err
+		}
+
+		caseInsensitive, err := getOptionalBoolParam(params, "case_insensitive", true)
+		if err != nil {
+			return nil, err
+		}
+
+		redactError, err := getOptionalBoolParam(params, "redact_error", false)
+		if err != nil {
+			return nil, err
+		}
+
 		return NewRedactionProcessor(RedactionOptions{
 			Keys:            keys,
-			Mask:            getStringParam(params, "mask", "***REDACTED***"),
-			CaseInsensitive: getBoolParam(params, "case_insensitive", true),
-			RedactError:     getBoolParam(params, "redact_error", false),
+			Mask:            mask,
+			CaseInsensitive: caseInsensitive,
+			RedactError:     redactError,
 		}), nil
 	})
 
 	_ = r.RegisterProcessor("sampling", func(params map[string]any) (Processor, error) {
+		debugEvery, err := getOptionalUint64Param(params, "debug_every", 1)
+		if err != nil {
+			return nil, err
+		}
+
+		infoEvery, err := getOptionalUint64Param(params, "info_every", 1)
+		if err != nil {
+			return nil, err
+		}
+
+		warnEvery, err := getOptionalUint64Param(params, "warn_every", 1)
+		if err != nil {
+			return nil, err
+		}
+
 		return NewSamplingProcessor(SamplingOptions{
-			DebugEvery: getUint64Param(params, "debug_every", 1),
-			InfoEvery:  getUint64Param(params, "info_every", 1),
-			WarnEvery:  getUint64Param(params, "warn_every", 1),
+			DebugEvery: debugEvery,
+			InfoEvery:  infoEvery,
+			WarnEvery:  warnEvery,
 		}), nil
 	})
 
 	_ = r.RegisterProcessor("context_enricher", func(params map[string]any) (Processor, error) {
+		includeUserID, err := getOptionalBoolParam(params, "include_user_id", true)
+		if err != nil {
+			return nil, err
+		}
+
+		includeTenantID, err := getOptionalBoolParam(params, "include_tenant_id", true)
+		if err != nil {
+			return nil, err
+		}
+
+		includeSessionID, err := getOptionalBoolParam(params, "include_session_id", true)
+		if err != nil {
+			return nil, err
+		}
+
+		userFieldName, err := getOptionalStringParam(params, "user_field_name", "user_id")
+		if err != nil {
+			return nil, err
+		}
+
+		tenantFieldName, err := getOptionalStringParam(params, "tenant_field_name", "tenant_id")
+		if err != nil {
+			return nil, err
+		}
+
+		sessionFieldName, err := getOptionalStringParam(params, "session_field_name", "session_id")
+		if err != nil {
+			return nil, err
+		}
+
 		return NewContextEnricher(ContextEnricherOptions{
-			IncludeUserID:    getBoolParam(params, "include_user_id", true),
-			IncludeTenantID:  getBoolParam(params, "include_tenant_id", true),
-			IncludeSessionID: getBoolParam(params, "include_session_id", true),
-			UserFieldName:    getStringParam(params, "user_field_name", "user_id"),
-			TenantFieldName:  getStringParam(params, "tenant_field_name", "tenant_id"),
-			SessionFieldName: getStringParam(params, "session_field_name", "session_id"),
+			IncludeUserID:    includeUserID,
+			IncludeTenantID:  includeTenantID,
+			IncludeSessionID: includeSessionID,
+			UserFieldName:    userFieldName,
+			TenantFieldName:  tenantFieldName,
+			SessionFieldName: sessionFieldName,
 		}), nil
 	})
 }
@@ -299,13 +400,23 @@ func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
 		if cfg.Next == nil {
 			return nil, fmt.Errorf("unilog: async sink requires next sink")
 		}
+
+		bufferSize, err := getOptionalIntParam(cfg.Params, "buffer_size", 256)
+		if err != nil {
+			return nil, err
+		}
+		blockOnFull, err := getOptionalBoolParam(cfg.Params, "block_on_full", false)
+		if err != nil {
+			return nil, err
+		}
+
 		next, err := buildSink(*cfg.Next, registry)
 		if err != nil {
 			return nil, err
 		}
 		sink = NewAsyncSink(next, AsyncSinkOptions{
-			BufferSize:  getIntParam(cfg.Params, "buffer_size", 256),
-			BlockOnFull: getBoolParam(cfg.Params, "block_on_full", false),
+			BufferSize:  bufferSize,
+			BlockOnFull: blockOnFull,
 		})
 
 	case "retry":
@@ -316,11 +427,29 @@ func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		maxAttempts, err := getOptionalIntParam(cfg.Params, "max_attempts", 3)
+		if err != nil {
+			return nil, err
+		}
+		initialBackoff, err := getOptionalDurationParam(cfg.Params, "initial_backoff", 50*time.Millisecond)
+		if err != nil {
+			return nil, err
+		}
+		maxBackoff, err := getOptionalDurationParam(cfg.Params, "max_backoff", time.Second)
+		if err != nil {
+			return nil, err
+		}
+		multiplier, err := getOptionalFloat64Param(cfg.Params, "multiplier", 2)
+		if err != nil {
+			return nil, err
+		}
+
 		sink = NewRetrySink(next, RetrySinkOptions{
-			MaxAttempts:    getIntParam(cfg.Params, "max_attempts", 3),
-			InitialBackoff: getDurationParam(cfg.Params, "initial_backoff", 50*time.Millisecond),
-			MaxBackoff:     getDurationParam(cfg.Params, "max_backoff", time.Second),
-			Multiplier:     getFloat64Param(cfg.Params, "multiplier", 2),
+			MaxAttempts:    maxAttempts,
+			InitialBackoff: initialBackoff,
+			MaxBackoff:     maxBackoff,
+			Multiplier:     multiplier,
 		})
 
 	case "circuit_breaker":
@@ -331,9 +460,19 @@ func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		failureThreshold, err := getOptionalIntParam(cfg.Params, "failure_threshold", 3)
+		if err != nil {
+			return nil, err
+		}
+		openTimeout, err := getOptionalDurationParam(cfg.Params, "open_timeout", 5*time.Second)
+		if err != nil {
+			return nil, err
+		}
+
 		sink = NewCircuitBreakerSink(next, CircuitBreakerOptions{
-			FailureThreshold: getIntParam(cfg.Params, "failure_threshold", 3),
-			OpenTimeout:      getDurationParam(cfg.Params, "open_timeout", 5*time.Second),
+			FailureThreshold: failureThreshold,
+			OpenTimeout:      openTimeout,
 		})
 
 	default:
@@ -583,4 +722,145 @@ func joinErrors(errs ...error) error {
 		return nil
 	}
 	return fmt.Errorf("%w", nonNil[0])
+}
+
+func getOptionalStringParam(params map[string]any, key, def string) (string, error) {
+	v, ok := params[key]
+	if !ok {
+		return def, nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("unilog: %q must be a string", key)
+	}
+	return s, nil
+}
+
+func getOptionalBoolParam(params map[string]any, key string, def bool) (bool, error) {
+	v, ok := params[key]
+	if !ok {
+		return def, nil
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false, fmt.Errorf("unilog: %q must be a bool", key)
+	}
+	return b, nil
+}
+
+func getOptionalUint64Param(params map[string]any, key string, def uint64) (uint64, error) {
+	v, ok := params[key]
+	if !ok {
+		return def, nil
+	}
+
+	switch x := v.(type) {
+	case uint64:
+		return x, nil
+	case uint32:
+		return uint64(x), nil
+	case uint:
+		return uint64(x), nil
+	case int:
+		if x < 0 {
+			return 0, fmt.Errorf("unilog: %q must be non-negative", key)
+		}
+		return uint64(x), nil
+	case int64:
+		if x < 0 {
+			return 0, fmt.Errorf("unilog: %q must be non-negative", key)
+		}
+		return uint64(x), nil
+	default:
+		return 0, fmt.Errorf("unilog: %q must be an unsigned integer", key)
+	}
+}
+
+func getOptionalIntParam(params map[string]any, key string, def int) (int, error) {
+	v, ok := params[key]
+	if !ok {
+		return def, nil
+	}
+
+	switch x := v.(type) {
+	case int:
+		return x, nil
+	case int64:
+		return int(x), nil
+	case int32:
+		return int(x), nil
+	case uint:
+		return int(x), nil
+	case uint64:
+		return int(x), nil
+	default:
+		return 0, fmt.Errorf("unilog: %q must be an integer", key)
+	}
+}
+
+func getOptionalFloat64Param(params map[string]any, key string, def float64) (float64, error) {
+	v, ok := params[key]
+	if !ok {
+		return def, nil
+	}
+
+	switch x := v.(type) {
+	case float64:
+		return x, nil
+	case float32:
+		return float64(x), nil
+	case int:
+		return float64(x), nil
+	case int64:
+		return float64(x), nil
+	default:
+		return 0, fmt.Errorf("unilog: %q must be a number", key)
+	}
+}
+
+func getOptionalDurationParam(params map[string]any, key string, def time.Duration) (time.Duration, error) {
+	v, ok := params[key]
+	if !ok {
+		return def, nil
+	}
+
+	switch x := v.(type) {
+	case time.Duration:
+		return x, nil
+	case string:
+		d, err := time.ParseDuration(x)
+		if err != nil {
+			return 0, fmt.Errorf("unilog: %q must be a valid duration: %w", key, err)
+		}
+		return d, nil
+	case int:
+		return time.Duration(x), nil
+	case int64:
+		return time.Duration(x), nil
+	default:
+		return 0, fmt.Errorf("unilog: %q must be a duration or duration string", key)
+	}
+}
+
+func getOptionalFileModeParam(params map[string]any, key string, def fs.FileMode) (fs.FileMode, error) {
+	v, ok := params[key]
+	if !ok {
+		return def, nil
+	}
+
+	switch x := v.(type) {
+	case fs.FileMode:
+		return x, nil
+	case uint32:
+		return fs.FileMode(x), nil
+	case uint64:
+		return fs.FileMode(x), nil
+	case int:
+		if x < 0 {
+			return 0, fmt.Errorf("unilog: %q must be non-negative", key)
+		}
+		return fs.FileMode(x), nil
+	default:
+		return 0, fmt.Errorf("unilog: %q must be a valid file mode", key)
+	}
 }
