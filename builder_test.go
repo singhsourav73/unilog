@@ -1,6 +1,7 @@
 package unilog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -166,4 +167,98 @@ func TestBuildFromConfigContextEnricherUsesUserFieldName(t *testing.T) {
 
 func levelPtr(l Level) *Level {
 	return &l
+}
+
+func TestBuildFromConfigRejectsInvalidAsyncBufferSizeType(t *testing.T) {
+	_, err := BuildFromConfig(Config{
+		Sinks: []SinkConfig{
+			{
+				Type: "async",
+				Params: map[string]any{
+					"buffer_size": "large",
+				},
+				Next: &SinkConfig{
+					Type: "json",
+					Params: map[string]any{
+						"writer": &bytes.Buffer{},
+					},
+				},
+			},
+		},
+	}, nil)
+
+	if err == nil || !strings.Contains(err.Error(), `"buffer_size"`) {
+		t.Fatalf("expected buffer_size type error, got %v", err)
+	}
+}
+
+func TestBuildFromConfigRejectsInvalidHTTPHeadersShape(t *testing.T) {
+	_, err := BuildFromConfig(Config{
+		Sinks: []SinkConfig{
+			{
+				Type: "http",
+				Params: map[string]any{
+					"url":     "http://example.com",
+					"headers": []string{"bad"},
+				},
+			},
+		},
+	}, nil)
+
+	if err == nil || !strings.Contains(err.Error(), `"headers"`) {
+		t.Fatalf("expected headers type error, got %v", err)
+	}
+}
+
+func TestBuildFromConfigRejectsInvalidHTTPTimeout(t *testing.T) {
+	_, err := BuildFromConfig(Config{
+		Sinks: []SinkConfig{
+			{
+				Type: "http",
+				Params: map[string]any{
+					"url":     "http://example.com",
+					"timeout": "definitely-not-a-duration",
+				},
+			},
+		},
+	}, nil)
+
+	if err == nil || !strings.Contains(err.Error(), `"timeout"`) {
+		t.Fatalf("expected timeout parse error, got %v", err)
+	}
+}
+
+func TestBuildFromConfigRejectsInvalidRedactionFlagType(t *testing.T) {
+	_, err := BuildFromConfig(Config{
+		Processors: []ProcessorConfig{
+			{
+				Type: "redact",
+				Params: map[string]any{
+					"keys":             []string{"password"},
+					"case_insensitive": "yes",
+				},
+			},
+		},
+	}, nil)
+
+	if err == nil || !strings.Contains(err.Error(), `"case_insensitive"`) {
+		t.Fatalf("expected case_insensitive type error, got %v", err)
+	}
+}
+
+func TestBuildFromConfigRejectsInvalidSamplingValue(t *testing.T) {
+	_, err := BuildFromConfig(Config{
+		Processors: []ProcessorConfig{
+			{
+				Type: "sampling",
+				Params: map[string]any{
+					"debug_every": -1,
+				},
+			},
+		},
+	}, nil)
+
+	if err == nil || !strings.Contains(err.Error(), `"debug_every"`) {
+		t.Fatalf("expected debug_every validation error, got %v", err)
+	}
 }
