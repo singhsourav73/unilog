@@ -7,7 +7,6 @@ import (
 )
 
 type TextSinkOptions = TextEncoderOptions
-
 type TextSink = WriterSink
 
 func NewTextSink(w io.Writer, opts TextSinkOptions) *TextSink {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -23,7 +24,7 @@ type FileSink struct {
 }
 
 func NewFileSink(opts FileSinkOptions) (*FileSink, error) {
-	path := opts.Path
+	path := strings.TrimSpace(opts.Path)
 	if path == "" {
 		return nil, fmt.Errorf("unilog: file sink path is empty")
 	}

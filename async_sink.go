@@ -8,14 +8,17 @@ import (
 )
 
 type AsyncSinkOptions struct {
-	BufferSize  int
-	BlockOnFull bool
-	OnError     func(error)
+	BufferSize     int
+	OverflowPolicy OverflowPolicy
+	OnError        func(error)
 }
 
 type AsyncSinkStats struct {
-	Enqueued uint64
-	Dropped  uint64
+	Enqueued    uint64
+	Dropped     uint64
+	WriteErrors uint64
+	Flushes     uint64
+	Closes      uint64
 }
 
 type asyncJob struct {
@@ -39,8 +42,11 @@ type AsyncSink struct {
 	errMu      sync.Mutex
 	workerErrs []error
 
-	enqueued atomic.Uint64
-	dropped  atomic.Uint64
+	enqueued    atomic.Uint64
+	dropped     atomic.Uint64
+	writeErrors atomic.Uint64
+	flushes     atomic.Uint64
+	closes      atomic.Uint64
 }
 
 func NewAsyncSink(next Sink, opts AsyncSinkOptions) *AsyncSink {
@@ -52,6 +58,9 @@ func NewAsyncSink(next Sink, opts AsyncSinkOptions) *AsyncSink {
 	}
 	if opts.OnError == nil {
 		opts.OnError = func(error) {}
+	}
+	if opts.OverflowPolicy != OverflowBlock && opts.OverflowPolicy != OverflowDropNewest {
+		opts.OverflowPolicy = OverflowDropNewest
 	}
 
 	a := &AsyncSink{
@@ -66,7 +75,7 @@ func NewAsyncSink(next Sink, opts AsyncSinkOptions) *AsyncSink {
 }
 
 func (a *AsyncSink) Name() string {
-	return "async->" + a.next.Name()
+	return "async(" + a.opts.OverflowPolicy.String() + ")->" + a.next.Name()
 }
 
 func (a *AsyncSink) Write(ctx context.Context, event Event) error {
@@ -93,8 +102,12 @@ func (a *AsyncSink) Close(ctx context.Context) error {
 	}
 	if a.closing {
 		a.mu.Unlock()
-		<-a.done
-		return nil
+		select {
+		case <-a.done:
+			return nil
+		case <-ctxDone(ctx):
+			return context.Cause(ctx)
+		}
 	}
 	a.closing = true
 	a.mu.Unlock()
@@ -114,8 +127,11 @@ func (a *AsyncSink) Close(ctx context.Context) error {
 
 func (a *AsyncSink) Stats() AsyncSinkStats {
 	return AsyncSinkStats{
-		Enqueued: a.enqueued.Load(),
-		Dropped:  a.dropped.Load(),
+		Enqueued:    a.enqueued.Load(),
+		Dropped:     a.dropped.Load(),
+		WriteErrors: a.writeErrors.Load(),
+		Flushes:     a.flushes.Load(),
+		Closes:      a.closes.Load(),
 	}
 }
 
@@ -134,7 +150,7 @@ func (a *AsyncSink) enqueue(ctx context.Context, job asyncJob, force bool) error
 		return ErrAsyncSinkClosed
 	}
 
-	if force || a.opts.BlockOnFull {
+	if force || a.opts.OverflowPolicy == OverflowBlock {
 		select {
 		case a.jobs <- job:
 			a.enqueued.Add(1)
@@ -166,17 +182,18 @@ func (a *AsyncSink) run() {
 		a.mu.Unlock()
 	}()
 
-	for {
-		job := <-a.jobs
+	for job := range a.jobs {
 		switch {
 		case job.event != nil:
 			if err := a.next.Write(job.ctx, *job.event); err != nil {
 				a.recordWorkerError(err)
 			}
 		case job.flush != nil:
+			a.flushes.Add(1)
 			err := joinErrors(a.drainWorkerErrors(), a.next.Sync(job.ctx))
 			job.flush <- err
 		case job.close != nil:
+			a.closes.Add(1)
 			err := joinErrors(a.drainWorkerErrors(), a.next.Sync(job.ctx), a.next.Close(job.ctx))
 			job.close <- err
 			return
@@ -190,6 +207,7 @@ func (a *AsyncSink) recordWorkerError(err error) {
 	}
 
 	a.errMu.Lock()
+	a.writeErrors.Add(1)
 	a.workerErrs = append(a.workerErrs, err)
 	a.errMu.Unlock()
 

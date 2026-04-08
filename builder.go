@@ -111,7 +111,10 @@ func (r *Registry) registerBuiltins() {
 	})
 
 	_ = r.RegisterSink("file", func(params map[string]any) (Sink, error) {
-		path := getStringParam(params, "path", "")
+		path, err := getOptionalStringParam(params, "path", "")
+		if err != nil {
+			return nil, err
+		}
 		if path == "" {
 			return nil, fmt.Errorf("unilog: missing %q", "path")
 		}
@@ -137,9 +140,7 @@ func (r *Registry) registerBuiltins() {
 		case "", "json":
 			encoder = NewJSONEncoder()
 		case "text":
-			encoder = NewTextEncoder(TextEncoderOptions{
-				TimeLayout: timeLayout,
-			})
+			encoder = NewTextEncoder(TextEncoderOptions{TimeLayout: timeLayout})
 		default:
 			return nil, fmt.Errorf("unilog: unsupported file sink format %q", format)
 		}
@@ -152,7 +153,10 @@ func (r *Registry) registerBuiltins() {
 	})
 
 	_ = r.RegisterSink("http", func(params map[string]any) (Sink, error) {
-		url := getStringParam(params, "url", "")
+		url, err := getOptionalStringParam(params, "url", "")
+		if err != nil {
+			return nil, err
+		}
 		if url == "" {
 			return nil, fmt.Errorf("unilog: missing url")
 		}
@@ -188,9 +192,7 @@ func (r *Registry) registerBuiltins() {
 		case "", "json":
 			encoder = NewJSONEncoder()
 		case "text":
-			encoder = NewTextEncoder(TextEncoderOptions{
-				TimeLayout: timeLayout,
-			})
+			encoder = NewTextEncoder(TextEncoderOptions{TimeLayout: timeLayout})
 		default:
 			return nil, fmt.Errorf("unilog: unsupported http sink format %q", format)
 		}
@@ -400,23 +402,29 @@ func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
 		if cfg.Next == nil {
 			return nil, fmt.Errorf("unilog: async sink requires next sink")
 		}
+		next, err := buildSink(*cfg.Next, registry)
+		if err != nil {
+			return nil, err
+		}
 
 		bufferSize, err := getOptionalIntParam(cfg.Params, "buffer_size", 256)
 		if err != nil {
 			return nil, err
 		}
-		blockOnFull, err := getOptionalBoolParam(cfg.Params, "block_on_full", false)
+
+		policyStr, err := getOptionalStringParam(cfg.Params, "overflow_policy", "drop_newest")
 		if err != nil {
 			return nil, err
 		}
 
-		next, err := buildSink(*cfg.Next, registry)
+		policy, err := ParseOverflowPolicy(policyStr)
 		if err != nil {
 			return nil, err
 		}
+
 		sink = NewAsyncSink(next, AsyncSinkOptions{
-			BufferSize:  bufferSize,
-			BlockOnFull: blockOnFull,
+			BufferSize:     bufferSize,
+			OverflowPolicy: policy,
 		})
 
 	case "retry":
@@ -473,6 +481,46 @@ func buildSink(cfg SinkConfig, registry *Registry) (Sink, error) {
 		sink = NewCircuitBreakerSink(next, CircuitBreakerOptions{
 			FailureThreshold: failureThreshold,
 			OpenTimeout:      openTimeout,
+		})
+
+	case "batch":
+		if cfg.Next == nil {
+			return nil, fmt.Errorf("unilog: batch sink requires next sink")
+		}
+		next, err := buildSink(*cfg.Next, registry)
+		if err != nil {
+			return nil, err
+		}
+
+		maxBatchSize, err := getOptionalIntParam(cfg.Params, "max_batch_size", 100)
+		if err != nil {
+			return nil, err
+		}
+
+		flushInterval, err := getOptionalDurationParam(cfg.Params, "flush_interval", time.Second)
+		if err != nil {
+			return nil, err
+		}
+
+		maxQueueSize, err := getOptionalIntParam(cfg.Params, "max_queue_size", maxBatchSize*4)
+		if err != nil {
+			return nil, err
+		}
+
+		policyStr, err := getOptionalStringParam(cfg.Params, "overflow_policy", "drop_newest")
+		if err != nil {
+			return nil, err
+		}
+		policy, err := ParseOverflowPolicy(policyStr)
+		if err != nil {
+			return nil, err
+		}
+
+		sink = NewBatchSink(next, BatchSinkOptions{
+			MaxBatchSize:   maxBatchSize,
+			FlushInterval:  flushInterval,
+			MaxQueueSize:   maxQueueSize,
+			OverflowPolicy: policy,
 		})
 
 	default:
