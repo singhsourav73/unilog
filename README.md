@@ -1,29 +1,35 @@
 # unilog
 
-`unilog` is a lightweight, vendor-agnostic structured logging package for Go.
+`unilog` is a lightweight, structured logging package for Go with a composable delivery pipeline.
 
-It is designed around a simple idea:
+It is designed around a simple rule:
 
-> application code should describe events, not logging vendors
+> your application should describe log events once, and the logging pipeline should decide how those events are processed and delivered.
 
-`unilog` provides a stable logger API, a normalized event model, pluggable sinks, event processors, per-sink level routing, and config-based pipeline assembly. It is built to make observability portable, composable, and easier to evolve over time.
+`unilog` provides:
 
-## Why `unilog`?
+- a small logger API for application code
+- structured fields and normalized events
+- pluggable processors and sinks
+- async and batch delivery wrappers
+- separate encoders and transports
+- config-driven assembly for production pipelines
 
-In many Go services, logging starts simple and gradually turns into infrastructure:
+It is suitable for local development, services writing to stdout or files, and systems that need buffered or remote delivery over HTTP.
 
-- logs go to stdout
-- errors go to another platform
-- trace and request IDs get added later
-- sensitive fields need redaction
-- noisy logs need sampling
-- switching providers becomes painful
+## Features
 
-`unilog` addresses that by separating:
-
-- **event creation** from **event delivery**
-- **application logging API** from **vendor-specific integrations**
-- **event transformation** from **sink implementations**
+- leveled logging
+- structured fields
+- child loggers with `With`, `WithName`, and `WithContext`
+- context-based correlation IDs
+- JSON and text encoders
+- writer, file, and HTTP sinks
+- fanout, level filters, async, batching, retry, and circuit breaker wrappers
+- redaction, sampling, and context enrichment processors
+- JSON and YAML config loading
+- environment variable expansion in config
+- race-tested core behavior
 
 ## Installation
 
@@ -41,7 +47,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/yourorg/unilog"
+	"unilog"
 )
 
 func main() {
@@ -50,9 +56,8 @@ func main() {
 	log := unilog.New(sink, unilog.Options{
 		Service:     "billing-api",
 		Environment: "dev",
-		Level:       unilog.DebugLevel,
+		Level:       unilog.InfoLevel,
 		AddCaller:   true,
-		AddStack:    true,
 	})
 
 	ctx := context.Background()
@@ -68,87 +73,84 @@ func main() {
 		unilog.String("order_id", "ord-1"),
 		unilog.String("provider", "stripe"),
 	)
+
+	if err := log.Sync(ctx); err != nil {
+		panic(err)
+	}
 }
 ```
 
-### Example output:
+## Package model
 
-```json
-{"time":"2026-04-01T10:00:00Z","level":"info","message":"payment started","service":"billing-api","environment":"dev","trace_id":"trace-123","request_id":"req-456","order_id":"ord-1","amount":100}
-{"time":"2026-04-01T10:00:01Z","level":"error","message":"payment failed","service":"billing-api","environment":"dev","trace_id":"trace-123","request_id":"req-456","error":"gateway timeout","order_id":"ord-1","provider":"stripe"}
-```
-
-## Core concepts
+`unilog` is built from a few small concepts.
 
 ### Logger
 
-The logger is the API your appication uses
+Application code writes logs through a `Logger`.
 
-```go
-type Logger interface {
-	Debug(ctx context.Context, msg string, fields ...Field)
-	Info(ctx context.Context, msg string, fields ...Field)
-	Warn(ctx context.Context, msg string, fields ...Field)
-	Error(ctx context.Context, err error, msg string, fields ...Field)
-	Fatal(ctx context.Context, err error, msg string, fields ...Field)
+A logger:
 
-	Log(ctx context.Context, level Level, msg string, fields ...Field)
-	LogErr(ctx context.Context, level Level, err error, msg string, fields ...Field)
+- creates normalized events
+- adds configured metadata
+- applies processors
+- forwards events to sinks
 
-	With(fields ...Field) Logger
-	WithName(name string) Logger
-	WithContext(ctx context.Context) Logger
-
-	Enabled(level Level) bool
-	Sync(ctx context.Context) error
-	Close(ctx context.Context) error
-}
-```
+Derived loggers are immutable.
 
 ### Event
 
-Every log entry is converted into a normalized event before it is processed or written to a backened
+Every log entry is normalized into an `Event` with fields such as:
 
-```go
-type Event struct {
-	Time          time.Time
-	Level         Level
-	Message       string
-	Err           error
-	Service       string
-	Environment   string
-	LoggerName    string
-	TraceID       string
-	SpanID        string
-	RequestID     string
-	CorrelationID string
-	Fields        []Field
-	Caller        *Caller
-	Stack         string
-}
-```
+- time
+- level
+- message
+- service
+- environment
+- trace and request identifiers
+- structured fields
+- error
+- caller
+- stack
+
+### Encoder
+
+Encoders turn events into bytes for transport sinks.
+
+Built-in encoders:
+
+- `JSONEncoder`
+- `TextEncoder`
 
 ### Sink
 
-A sink is a destination for events.
-Built-in sinks in Milestone 2:
+A sink is a destination or delivery stage for events.
 
-- JSONSink
-- TextSink
-- FanoutSink
-- LevelFilterSink
-- NopSink
+Built-in sinks and wrappers:
+
+- `NopSink`
+- `WriterSink`
+- `JSONSink`
+- `TextSink`
+- `FileSink`
+- `HTTPSink`
+- `FanoutSink`
+- `LevelFilterSink`
+- `AsyncSink`
+- `BatchSink`
+- `RetrySink`
+- `CircuitBreakerSink`
 
 ### Processor
 
-A processor can inspect, modify, or drop an event before it reaches sinks.
+Processors can inspect, mutate, or drop events before they are delivered.
 
-Built-in processors in Milestone 2:
+Built-in processors:
 
-- RedactionProcessor
-- SamplingProcessor
+- `RedactionProcessor`
+- `SamplingProcessor`
+- `ContextEnricher`
 
-## Feature
+## Basic usage
 
 ### Structured fields
 
@@ -160,21 +162,17 @@ log.Info(ctx, "user login",
 )
 ```
 
-### Immutable child loggers
-
-`With`, `WithName`, and `WithContext` return derived loggers. They do not mutate the original logger.
+### Child loggers
 
 ```go
 base := log.With(unilog.String("component", "auth"))
-child := base.With(unilog.String("subsystem", "token"))
+child := base.WithName("token")
 
 base.Info(ctx, "base logger")
 child.Info(ctx, "child logger")
 ```
 
-### Context propagation
-
-`unilog` can carry request-scoped metadata through `context.Context`.
+### Context correlation
 
 ```go
 ctx := context.Background()
@@ -182,43 +180,69 @@ ctx = unilog.WithTraceID(ctx, "trace-123")
 ctx = unilog.WithSpanID(ctx, "span-456")
 ctx = unilog.WithRequestID(ctx, "req-789")
 ctx = unilog.WithCorrelationID(ctx, "corr-999")
+
+log.Info(ctx, "request received")
 ```
 
-These values are automatically attached to emitted events.
+## Encoders and sinks
 
-### JSON output
-
-Use `JSONSink` when logs are meant for machines and log ingestion pipelines.
+### JSON to stdout
 
 ```go
 sink := unilog.NewJSONSink(os.Stdout)
-log := unilog.New(sink, unilog.Options{Service: "billing-api"})
+log := unilog.New(sink, unilog.Options{
+	Service: "billing-api",
+	Level:   unilog.DebugLevel,
+})
 ```
 
-### Human-readable text output
-
-Use `TextSink` for local development and debugging.
+### Text output
 
 ```go
 sink := unilog.NewTextSink(os.Stdout, unilog.TextSinkOptions{})
-log := unilog.New(sink, unilog.Options{Service: "billing-api"})
+log := unilog.New(sink, unilog.Options{
+	Service: "billing-api",
+})
 ```
 
-### Fanout to multiple destinations
+### File sink
 
-A single event can be written to multiple sinks.
+```go
+sink, err := unilog.NewFileSink(unilog.FileSinkOptions{
+	Path:    "app.log",
+	Encoder: unilog.NewJSONEncoder(),
+})
+if err != nil {
+	panic(err)
+}
+defer sink.Close(context.Background())
+```
+
+### HTTP sink
+
+```go
+sink, err := unilog.NewHTTPSink(unilog.HTTPSinkOptions{
+	URL:     "https://logs.example.com/ingest",
+	Method:  "POST",
+	Encoder: unilog.NewJSONEncoder(),
+})
+if err != nil {
+	panic(err)
+}
+```
+
+## Composition
+
+### Fanout
 
 ```go
 sink := unilog.NewFanoutSink(
 	unilog.NewTextSink(os.Stdout, unilog.TextSinkOptions{}),
 	unilog.NewJSONSink(os.Stdout),
 )
-log := unilog.New(sink, unilog.Options{Service: "billing-api"})
 ```
 
-### Per-sink level routing
-
-Wrap a sink with `LevelFilterSink` to only forward events at or above a given level.
+### Level filtering
 
 ```go
 textSink := unilog.NewLevelFilterSink(
@@ -232,12 +256,86 @@ jsonSink := unilog.NewLevelFilterSink(
 )
 
 sink := unilog.NewFanoutSink(textSink, jsonSink)
-log := unilog.New(sink, unilog.Options{Service: "billing-api"})
 ```
 
-### Redaction
+## Delivery wrappers
 
-Protect sensitive fields before they are written anywhere.
+### Async delivery
+
+```go
+sink := unilog.NewAsyncSink(
+	unilog.NewJSONSink(os.Stdout),
+	unilog.AsyncSinkOptions{
+		BufferSize:     256,
+		OverflowPolicy: unilog.OverflowDropNewest,
+	},
+)
+```
+
+Supported overflow policies:
+
+- `OverflowDropNewest`
+- `OverflowBlock`
+
+`AsyncSink.Sync()` and `AsyncSink.Close()` surface accumulated worker errors.
+
+### Batch delivery
+
+```go
+httpSink, err := unilog.NewHTTPSink(unilog.HTTPSinkOptions{
+	URL:     "https://logs.example.com/ingest",
+	Encoder: unilog.NewJSONEncoder(),
+})
+if err != nil {
+	panic(err)
+}
+
+sink := unilog.NewBatchSink(httpSink, unilog.BatchSinkOptions{
+	MaxBatchSize:   100,
+	FlushInterval:  time.Second,
+	MaxQueueSize:   400,
+	OverflowPolicy: unilog.OverflowDropNewest,
+})
+```
+
+`BatchSink` flushes when:
+
+- the batch reaches `MaxBatchSize`
+- the flush interval expires
+- `Sync()` is called
+- `Close()` is called
+
+If the downstream sink implements batch writing, `BatchSink` uses it. Otherwise it falls back to single-event writes.
+
+### Retry wrapper
+
+```go
+sink := unilog.NewRetrySink(
+	httpSink,
+	unilog.RetrySinkOptions{
+		MaxAttempts:    3,
+		InitialBackoff: 50 * time.Millisecond,
+		MaxBackoff:     time.Second,
+		Multiplier:     2,
+	},
+)
+```
+
+### Circuit breaker wrapper
+
+```go
+sink := unilog.NewCircuitBreakerSink(
+	httpSink,
+	unilog.CircuitBreakerOptions{
+		FailureThreshold: 3,
+		OpenTimeout:      5 * time.Second,
+	},
+)
+```
+
+## Processors
+
+### Redaction
 
 ```go
 processor := unilog.NewRedactionProcessor(unilog.RedactionOptions{
@@ -245,22 +343,9 @@ processor := unilog.NewRedactionProcessor(unilog.RedactionOptions{
 	Mask:            "***REDACTED***",
 	CaseInsensitive: true,
 })
-
-log := unilog.New(
-	unilog.NewJSONSink(os.Stdout),
-	unilog.Options{Service: "billing-api"},
-	processor,
-)
-
-log.Info(ctx, "user login",
-	unilog.String("user_id", "u-1"),
-	unilog.String("password", "super-secret"),
-)
 ```
 
 ### Sampling
-
-Reduce noisy logs deterministically.
 
 ```go
 processor := unilog.NewSamplingProcessor(unilog.SamplingOptions{
@@ -270,114 +355,24 @@ processor := unilog.NewSamplingProcessor(unilog.SamplingOptions{
 })
 ```
 
-This keeps:
-
-- every 10th debug event
-- every 5th info event
-- every warning
-- all errors and fatals
-
-### Config-driven pipeline assembly
-
-Milestone 2 includes a registry-based builder so sinks and processors can be wired from configuration.
+### Context enrichment
 
 ```go
-package main
-
-import (
-	"context"
-	"os"
-
-	"github.com/yourorg/unilog"
-)
-
-func main() {
-	cfg := unilog.Config{
-		Service:     "billing-api",
-		Environment: "prod",
-		Level:       unilog.DebugLevel,
-		Sinks: []unilog.SinkConfig{
-			{
-				Type: "text",
-				Params: map[string]any{
-					"writer": os.Stdout,
-				},
-				MinLevel: levelPtr(unilog.DebugLevel),
-			},
-			{
-				Type: "json",
-				Params: map[string]any{
-					"writer": os.Stdout,
-				},
-				MinLevel: levelPtr(unilog.InfoLevel),
-			},
-		},
-		Processors: []unilog.ProcessorConfig{
-			{
-				Type: "redact",
-				Params: map[string]any{
-					"keys": []string{"password", "token", "authorization"},
-				},
-			},
-			{
-				Type: "sampling",
-				Params: map[string]any{
-					"debug_every": uint64(10),
-					"info_every":  uint64(5),
-				},
-			},
-		},
-	}
-
-	log, err := unilog.BuildFromConfig(cfg, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	ctx := context.Background()
-	ctx = unilog.WithTraceID(ctx, "trace-123")
-	ctx = unilog.WithRequestID(ctx, "req-456")
-
-	log.Info(ctx, "user login",
-		unilog.String("user_id", "u-1"),
-		unilog.String("password", "super-secret"),
-	)
-}
-
-func levelPtr(l unilog.Level) *unilog.Level { return &l }
-```
-
-### Built-in registry entries
-
-#### Built-in sinks
-
-- nop
-- json
-- text
-
-#### Built-in processors
-
-- redact
-- sampling
-
-You can also register your own sinks and processors:
-
-```go
-reg := unilog.NewRegistry()
-
-err := reg.RegisterSink("custom", func(params map[string]any) (unilog.Sink, error) {
-	return newCustomSink(params)
+processor := unilog.NewContextEnricher(unilog.ContextEnricherOptions{
+	IncludeUserID:    true,
+	IncludeTenantID:  true,
+	IncludeSessionID: true,
+	UserFieldName:    "user_id",
+	TenantFieldName:  "tenant_id",
+	SessionFieldName: "session_id",
 })
-if err != nil {
-	panic(err)
-}
 ```
 
-### Error handling
+## Error handling
 
-Logging calls do not return errors.
+Logging methods do not return delivery errors directly.
 
-Internal pipeline failures are routed to `OnInternalError`:
+Internal pipeline errors are routed through `OnInternalError`:
 
 ```go
 log := unilog.New(
@@ -391,41 +386,200 @@ log := unilog.New(
 )
 ```
 
-Processors may also intentionally drop events using the internal sentinel `ErrDropEvent`. This is used by the sampling processor.
+Wrapper sinks such as `AsyncSink` and `BatchSink` expose delivery errors through `Sync()` and `Close()`.
 
-## Philosophy
+## Fatal behavior
 
-`unilog` is built around a few design rules:
+`Fatal()` logs at `FatalLevel`.
 
-- loggers are immutable
-- events are normalized before reaching sinks
-- processors transform events before delivery
-- sinks handle transport, not business meaning
-- application code should not be tightly coupled to a logging vendor
+It does **not** call `os.Exit`. Process termination remains the application’s responsibility.
 
-## Development status
+## Configuration
 
-This project is under active development. The API is still evolving, though the core abstractions introduced till now are intended to remain stable.
+`unilog` can build a logger pipeline from config.
 
-## Testing
+### Build from config in code
 
-Run the test suite with:
+```go
+cfg := unilog.Config{
+	Service:     "billing-api",
+	Environment: "prod",
+	Level:       unilog.DebugLevel,
+	Sinks: []unilog.SinkConfig{
+		{
+			Type: "batch",
+			Params: map[string]any{
+				"max_batch_size":  100,
+				"flush_interval":  "1s",
+				"max_queue_size":  400,
+				"overflow_policy": "drop_newest",
+			},
+			Next: &unilog.SinkConfig{
+				Type: "async",
+				Params: map[string]any{
+					"buffer_size":     512,
+					"overflow_policy": "drop_newest",
+				},
+				Next: &unilog.SinkConfig{
+					Type: "http",
+					Params: map[string]any{
+						"url":    "https://logs.example.com/ingest",
+						"method": "POST",
+						"format": "json",
+					},
+				},
+			},
+		},
+	},
+	Processors: []unilog.ProcessorConfig{
+		{
+			Type: "redact",
+			Params: map[string]any{
+				"keys": []string{"password", "token"},
+			},
+		},
+	},
+}
 
-```bash
-go test ./...
+log, err := unilog.BuildFromConfig(cfg, nil)
+if err != nil {
+	panic(err)
+}
 ```
 
-For race detection:
+### Load JSON or YAML
 
-```bash
-go test -race ./...
+```go
+cfg, err := unilog.LoadConfigFile("unilog.yaml")
+if err != nil {
+	panic(err)
+}
+
+log, err := unilog.BuildFromConfig(cfg, nil)
+if err != nil {
+	panic(err)
+}
 ```
 
-### Contributing
+### Supported built-in sink types
 
-Issues, design feedback, and implementation suggestions are welcome.
-If you plan to contribute a new sink or processor, try to preserve the core design principles:
+- `nop`
+- `json`
+- `text`
+- `file`
+- `http`
 
+### Supported sink wrappers
+
+- `async`
+- `batch`
+- `retry`
+- `circuit_breaker`
+
+### Supported processors
+
+- `redact`
+- `sampling`
+- `context_enricher`
+
+### Environment expansion
+
+```yaml
+service: ${SERVICE_NAME}
+environment: ${ENVIRONMENT}
+sinks:
+  - type: http
+    params:
+      url: ${LOG_INGEST_URL}
+      method: POST
+      format: json
+```
+
+## Examples
+
+### Local development
+
+Use text logs to stdout:
+
+```go
+sink := unilog.NewTextSink(os.Stdout, unilog.TextSinkOptions{})
+log := unilog.New(sink, unilog.Options{
+	Service: "billing-api",
+	Level:   unilog.DebugLevel,
+})
+```
+
+### Production-style HTTP delivery
+
+```go
+httpSink, err := unilog.NewHTTPSink(unilog.HTTPSinkOptions{
+	URL:     "https://logs.example.com/ingest",
+	Encoder: unilog.NewJSONEncoder(),
+})
+if err != nil {
+	panic(err)
+}
+
+batchSink := unilog.NewBatchSink(httpSink, unilog.BatchSinkOptions{
+	MaxBatchSize:   100,
+	FlushInterval:  time.Second,
+	MaxQueueSize:   400,
+	OverflowPolicy: unilog.OverflowDropNewest,
+})
+
+asyncSink := unilog.NewAsyncSink(batchSink, unilog.AsyncSinkOptions{
+	BufferSize:     512,
+	OverflowPolicy: unilog.OverflowDropNewest,
+})
+
+log := unilog.New(asyncSink, unilog.Options{
+	Service:     "billing-api",
+	Environment: "prod",
+	Level:       unilog.InfoLevel,
+})
+```
+
+## Performance notes
+
+- `AddCaller` and `AddStack` increase overhead
+- JSON encoding is typically better for machine ingestion
+- text encoding is easier for local debugging
+- `AsyncSink` reduces caller-path latency
+- `BatchSink` improves remote delivery efficiency
+- `OverflowDropNewest` avoids blocking under pressure
+- `OverflowBlock` preserves events at the cost of latency
+
+## API stability
+
+The package is still evolving and some APIs may continue to change while the architecture settles.
+
+At this stage, the core design is already in place:
+
+- logger API
+- event normalization
+- processors
+- encoders
+- sinks and wrappers
+- config-driven assembly
+
+## Roadmap
+
+Near-term directions include:
+
+- repository/package structure cleanup
+- stronger backend-specific adapters
+- improved observability around delivery stats
+- more examples and docs
+- additional encoder and sink capabilities
+
+## Contributing
+
+Contributions and design feedback are welcome.
+
+A few guiding principles for changes:
+
+- keep the application-facing API small
 - keep the core vendor-neutral
-- avoid mutating shared logger state
-- prefer composition over backend-specific shortcuts
+- prefer explicit delivery semantics
+- avoid hidden global state
+- preserve composability

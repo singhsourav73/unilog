@@ -210,12 +210,6 @@ func (b *BatchSink) run() {
 		var err error
 		if bw, ok := b.next.(BatchWriter); ok {
 			err = bw.WriteBatch(ctx, toFlush)
-			if err == nil {
-				b.incFlushed(uint64(len(toFlush)))
-			} else {
-				b.incWriteErrors()
-				b.opts.OnError(err)
-			}
 		} else {
 			for _, ev := range toFlush {
 				if e := b.next.Write(ctx, ev); e != nil {
@@ -227,6 +221,7 @@ func (b *BatchSink) run() {
 		if err == nil {
 			b.incFlushed(uint64(len(toFlush)))
 		} else {
+			b.incWriteErrors()
 			b.opts.OnError(err)
 		}
 		return err
