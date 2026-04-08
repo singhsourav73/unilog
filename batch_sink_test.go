@@ -266,3 +266,57 @@ func TestBatchSinkRejectsWritesAfterCloseStarts(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 }
+
+type failingBatchSink struct{}
+
+func (f *failingBatchSink) Name() string { return "failing-batch" }
+func (f *failingBatchSink) Write(ctx context.Context, event Event) error {
+	return errors.New("write failed")
+}
+func (f *failingBatchSink) WriteBatch(ctx context.Context, events []Event) error {
+	return errors.New("batch write failed")
+}
+func (f *failingBatchSink) Sync(ctx context.Context) error  { return nil }
+func (f *failingBatchSink) Close(ctx context.Context) error { return nil }
+
+func TestBatchSinkStatsTrackBatchesErrorsFlushesAndClose(t *testing.T) {
+	sink := NewBatchSink(&failingBatchSink{}, BatchSinkOptions{
+		MaxBatchSize:   2,
+		FlushInterval:  time.Hour,
+		MaxQueueSize:   8,
+		OverflowPolicy: OverflowBlock,
+	})
+
+	for i := 0; i < 2; i++ {
+		err := sink.Write(context.Background(), Event{
+			Time:    time.Unix(0, 0).UTC(),
+			Level:   InfoLevel,
+			Message: "hello",
+		})
+		if err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+
+	if err := sink.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	if err := sink.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	stats := sink.Stats()
+	if stats.Batches == 0 {
+		t.Fatalf("expected Batches > 0, got %+v", stats)
+	}
+	if stats.WriteErrors == 0 {
+		t.Fatalf("expected WriteErrors > 0, got %+v", stats)
+	}
+	if stats.Flushes == 0 {
+		t.Fatalf("expected Flushes > 0, got %+v", stats)
+	}
+	if stats.Closes == 0 {
+		t.Fatalf("expected Closes > 0, got %+v", stats)
+	}
+}

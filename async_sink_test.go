@@ -3,6 +3,7 @@ package unilog
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -219,5 +220,53 @@ func TestAsyncSinkSyncAfterCloseReturnsClosed(t *testing.T) {
 	err := sink.Sync(context.Background())
 	if !errors.Is(err, ErrAsyncSinkClosed) {
 		t.Fatalf("expected ErrAsyncSinkClosed, got %v", err)
+	}
+}
+
+type failingSink struct{}
+
+func (f *failingSink) Name() string { return "failing" }
+func (f *failingSink) Write(ctx context.Context, event Event) error {
+	return errors.New("write failed")
+}
+func (f *failingSink) Sync(ctx context.Context) error  { return nil }
+func (f *failingSink) Close(ctx context.Context) error { return nil }
+
+func TestAsyncSinkStatsTrackWriteErrorsAndFlushes(t *testing.T) {
+	sink := NewAsyncSink(&failingSink{}, AsyncSinkOptions{
+		BufferSize:     8,
+		OverflowPolicy: OverflowBlock,
+	})
+
+	err := sink.Write(context.Background(), Event{
+		Time:    time.Unix(0, 0).UTC(),
+		Level:   InfoLevel,
+		Message: "hello",
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	err = sink.Sync(context.Background())
+	if err == nil {
+		t.Fatalf("expected Sync() to return accumulated worker error, got nil")
+	}
+	if !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("expected Sync() error to contain write failure, got %v", err)
+	}
+
+	if err := sink.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	stats := sink.Stats()
+	if stats.WriteErrors == 0 {
+		t.Fatalf("expected WriteErrors > 0, got %+v", stats)
+	}
+	if stats.Flushes == 0 {
+		t.Fatalf("expected Flushes > 0, got %+v", stats)
+	}
+	if stats.Closes == 0 {
+		t.Fatalf("expected Closes > 0, got %+v", stats)
 	}
 }

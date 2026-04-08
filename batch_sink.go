@@ -19,9 +19,13 @@ type BatchSinkOptions struct {
 }
 
 type BatchSinkStats struct {
-	Enqueued uint64
-	Flushed  uint64
-	Dropped  uint64
+	Enqueued    uint64
+	Flushed     uint64
+	Dropped     uint64
+	Batches     uint64
+	WriteErrors uint64
+	Flushes     uint64
+	Closes      uint64
 }
 
 type batchJob struct {
@@ -57,7 +61,7 @@ func NewBatchSink(next Sink, opts BatchSinkOptions) *BatchSink {
 		opts.FlushInterval = time.Second
 	}
 	if opts.MaxQueueSize <= 0 {
-		opts.MaxQueueSize = opts.MaxQueueSize * 4
+		opts.MaxQueueSize = opts.MaxBatchSize * 4
 	}
 	if opts.OverflowPolicy != OverflowBlock && opts.OverflowPolicy != OverflowDropNewest {
 		opts.OverflowPolicy = OverflowDropNewest
@@ -108,8 +112,12 @@ func (b *BatchSink) Close(ctx context.Context) error {
 	}
 	if b.closing {
 		b.mu.Unlock()
-		<-b.done
-		return nil
+		select {
+		case <-b.done:
+			return nil
+		case <-ctxDone(ctx):
+			return context.Cause(ctx)
+		}
 	}
 	b.closing = true
 	b.mu.Unlock()
@@ -197,9 +205,17 @@ func (b *BatchSink) run() {
 		copy(toFlush, batch)
 		batch = batch[:0]
 
+		b.incBatches()
+
 		var err error
 		if bw, ok := b.next.(BatchWriter); ok {
 			err = bw.WriteBatch(ctx, toFlush)
+			if err == nil {
+				b.incFlushed(uint64(len(toFlush)))
+			} else {
+				b.incWriteErrors()
+				b.opts.OnError(err)
+			}
 		} else {
 			for _, ev := range toFlush {
 				if e := b.next.Write(ctx, ev); e != nil {
@@ -230,11 +246,13 @@ func (b *BatchSink) run() {
 				}
 
 			case job.flush != nil:
+				b.incFlushes()
 				err := joinErrors(flushBatch(job.ctx), b.next.Sync(job.ctx))
 				job.flush <- err
 
 			case job.close != nil:
-				err := joinErrors(flushBatch(job.ctx), b.next.Close(job.ctx))
+				b.incCloses()
+				err := joinErrors(flushBatch(job.ctx), b.next.Sync(job.ctx), b.next.Close(job.ctx))
 				job.close <- err
 				return
 			}
@@ -257,5 +275,29 @@ func (b *BatchSink) incDropped() {
 func (b *BatchSink) incFlushed(n uint64) {
 	b.statsMu.Lock()
 	b.stats.Flushed += n
+	b.statsMu.Unlock()
+}
+
+func (b *BatchSink) incWriteErrors() {
+	b.statsMu.Lock()
+	b.stats.WriteErrors++
+	b.statsMu.Unlock()
+}
+
+func (b *BatchSink) incFlushes() {
+	b.statsMu.Lock()
+	b.stats.Flushes++
+	b.statsMu.Unlock()
+}
+
+func (b *BatchSink) incCloses() {
+	b.statsMu.Lock()
+	b.stats.Closes++
+	b.statsMu.Unlock()
+}
+
+func (b *BatchSink) incBatches() {
+	b.statsMu.Lock()
+	b.stats.Batches++
 	b.statsMu.Unlock()
 }
